@@ -27,7 +27,7 @@ DEFAULT_LIMITS = {
     "single_session": True,       # a new Start ends the user's previous session
     "signups_open": True,         # closed: only existing users and people with a valid invite code
     "max_gpus": 5,                # pool cap
-    "idle_grace_minutes": 10,     # a GPU with nobody streaming stops after this
+    "idle_grace_minutes": 5,      # a GPU with nobody streaming stops after this (dead-man on the node stays 15 min)
 }
 USER_OVERRIDES = ("max_session_hours", "daily_hours", "single_session")
 

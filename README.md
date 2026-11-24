@@ -217,7 +217,7 @@ plus anyone an admin marks as admin. Everything an admin changes is written to t
   | Free trial for new accounts | 0 min | credited once at sign-up |
   | Anyone can create an account | on | off: only existing users, owners and people arriving with a valid invite link |
   | Most GPUs running at once | 5 | the pool cap (replaces `POOL_MAX_NODES` once saved) |
-  | GPU stops after nobody streams for | 10 min | sent to every node in the heartbeat reply |
+  | GPU stops after nobody streams for | 5 min | sent to every node in the heartbeat reply (the dead-man stays 15 min) |
 
 Offline tests (fake Google, fake Razorpay, simulated Vast):
 

@@ -253,6 +253,8 @@ def test_admin_roles_and_overview():
 def test_pool_limits_reach_pool_and_nodes():
     app, db, pool, vast = build()
     owner, _ = clients(app)
+    r = node_beat(TestClient(app, base_url=SITE), 7, "n1", "https://n7.trycloudflare.com").json()
+    assert r["grace_s"] == 300                                          # default: stop 5 min after the last stream
     owner.post("/api/admin/limits", json={"max_gpus": 2, "idle_grace_minutes": 3})
     assert pool.cfg.max_nodes == 2
     r = node_beat(TestClient(app, base_url=SITE), 7, "n1", "https://n7.trycloudflare.com").json()
