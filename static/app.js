@@ -57,19 +57,128 @@ async function listBrowserCams() {
   if (localStorage.bcam && devs.some((d) => d.deviceId === localStorage.bcam)) sel.value = localStorage.bcam;
 }
 
+const hasWebCodecs = () => "VideoEncoder" in window && "VideoDecoder" in window && "MediaStreamTrackProcessor" in window;
+
 async function startBrowser() {
   if (!window.isSecureContext || !navigator.mediaDevices) {
     throw new Error("The browser only allows the webcam on https:// or localhost. Open this page through the SSH tunnel or the https link.");
   }
   const [w, h] = state.settings.resolution === "1080p" ? [1920, 1080] : [1280, 720];
-  const video = $("#cam");
   bs.stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: { deviceId: localStorage.bcam ? { ideal: localStorage.bcam } : undefined, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: state.settings.fps } },
   });
+  listBrowserCams();
+  if (hasWebCodecs()) {
+    try { await startH264(); return; }
+    catch (e) { console.warn("H.264 mode unavailable, falling back to JPEG:", e); bs.ws?.close(); }
+  }
+  await startJpeg(w, h);
+}
+
+/* H.264 both ways (WebCodecs, hardware encode/decode): about a tenth of the bandwidth of JPEG frames */
+async function pickEncoderConfig(width, height, framerate, bitrate) {
+  for (const hw of ["prefer-hardware", "no-preference"]) {
+    for (const codec of ["avc1.640033", "avc1.4D0033", "avc1.42E033"]) {
+      const cfg = { codec, width, height, bitrate, framerate, latencyMode: "realtime", hardwareAcceleration: hw, avc: { format: "annexb" } };
+      try { const r = await VideoEncoder.isConfigSupported(cfg); if (r.supported) return r.config; } catch { /* try next */ }
+    }
+  }
+  return null;
+}
+
+async function startH264() {
+  const track = bs.stream.getVideoTracks()[0];
+  const st = track.getSettings();
+  const width = st.width & ~1, height = st.height & ~1;
+  const fps = state.settings.fps;
+  const bitrate = Math.round(state.settings.stream_bitrate_mbps * 1e6);
+  const cfg = await pickEncoderConfig(width, height, fps, bitrate);
+  if (!cfg) throw new Error("No H.264 encoder in this browser");
+
+  const out = $("#out");
+  const outCtx = out.getContext("2d");
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/h264`);
+  ws.binaryType = "arraybuffer";
+  bs.ws = ws;
+  bs.sendId = bs.recvId = 0; bs.sent.clear(); bs.mode = "H.264";
+  let needKey = true, decReady = false;
+
+  const encoder = new VideoEncoder({
+    output: (chunk) => {
+      if (ws.readyState !== 1) return;
+      const buf = new Uint8Array(6 + chunk.byteLength);
+      const dv = new DataView(buf.buffer);
+      dv.setUint8(0, 1);
+      dv.setUint8(1, chunk.type === "key" ? 1 : 0);
+      dv.setUint32(2, chunk.timestamp, true);          // the frame id rides in the timestamp
+      chunk.copyTo(buf.subarray(6));
+      ws.send(buf);
+    },
+    error: (e) => showError("Video encoder: " + e.message),
+  });
+  encoder.configure(cfg);
+
+  const makeDecoder = () => {
+    const d = new VideoDecoder({
+      output: (f) => {
+        if (out.width !== f.displayWidth || out.height !== f.displayHeight) { out.width = f.displayWidth; out.height = f.displayHeight; }
+        outCtx.drawImage(f, 0, 0);
+        f.close();
+      },
+      error: () => { decReady = false; bs.decoder = makeDecoder(); if (ws.readyState === 1) ws.send('{"t":"kf"}'); },
+    });
+    d.configure({ codec: "avc1.640033", optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });
+    return d;
+  };
+  bs.decoder = makeDecoder();
+  bs.encoder = encoder;
+
+  ws.onmessage = (e) => {
+    if (typeof e.data === "string") {
+      try { if (JSON.parse(e.data).t === "kf") needKey = true; } catch { /* ignore */ }
+      return;
+    }
+    const dv = new DataView(e.data);
+    const key = dv.getUint8(1) === 1, id = dv.getUint32(2, true);
+    const t = bs.sent.get(id);
+    if (t) { bs.rtt = performance.now() - t; bs.rtts.push(bs.rtt); if (bs.rtts.length > 90) bs.rtts.shift(); }
+    for (const k of bs.sent.keys()) if (k <= id) bs.sent.delete(k);
+    bs.recvId = Math.max(bs.recvId, id);
+    if (!decReady && !key) return;
+    decReady = true;
+    try { bs.decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: id, data: new Uint8Array(e.data, 6) })); }
+    catch { decReady = false; ws.send('{"t":"kf"}'); }
+  };
+  ws.onclose = () => { if (bs.running) { stopBrowser(); showError("The connection to the GPU server closed. Press Start camera to reconnect."); } };
+  await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = () => fail(new Error("Could not connect to the GPU server.")); });
+
+  bs.running = true;
+  const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+  bs.reader = reader;
+  const sendBudget = bitrate / 8 * 0.12;              // at most ~120 ms of video waiting in the socket
+  (async () => {
+    while (bs.running) {
+      const { value: frame, done } = await reader.read();
+      if (done || !frame) break;
+      // Drop before encoding (never after): keeps the H.264 stream valid while the link catches up.
+      if (encoder.encodeQueueSize > 1 || ws.bufferedAmount > sendBudget || ws.readyState !== 1) { frame.close(); continue; }
+      const id = ++bs.sendId;
+      bs.sent.set(id, performance.now());
+      const vf = new VideoFrame(frame, { timestamp: id });
+      frame.close();
+      encoder.encode(vf, { keyFrame: needKey || id % (fps * 2) === 0 });
+      needKey = false;
+      vf.close();
+    }
+  })().catch((e) => console.warn(e));
+}
+
+async function startJpeg(w, h) {
+  const video = $("#cam");
   video.srcObject = bs.stream;
   await video.play();
-  listBrowserCams();
+  bs.mode = "JPEG";
 
   bs.cap = Object.assign(document.createElement("canvas"), { width: w, height: h });
   bs.capCtx = bs.cap.getContext("2d");
@@ -135,6 +244,9 @@ async function pump() {
 function stopBrowser() {
   bs.running = false;
   clearInterval(bs.timer);
+  bs.reader?.cancel().catch(() => {});
+  for (const c of [bs.encoder, bs.decoder]) { try { if (c && c.state !== "closed") c.close(); } catch { /* closed */ } }
+  bs.reader = bs.encoder = bs.decoder = null;
   bs.ws?.close();
   bs.ws = null;
   bs.stream?.getTracks().forEach((t) => t.stop());
@@ -228,7 +340,7 @@ function renderStats(s) {
   $("#m-det").textContent = `${s.detect_ms ?? 0} ms`;
   $("#m-swap").textContent = `${s.swap_ms ?? 0} ms`;
   $("#m-enh").textContent = `${s.enhance_ms ?? 0} ms`;
-  const facts = [`faces ${s.faces ?? 0}`, source() === "server" && s.camera && `camera ${s.camera}`, s.output && `output ${s.output}`,
+  const facts = [`faces ${s.faces ?? 0}`, bs.running && bs.mode && `stream ${bs.mode}${s.encoder ? " · " + s.encoder : ""}`, source() === "server" && s.camera && `camera ${s.camera}`, s.output && `output ${s.output}`,
     s.swap_provider && s.swap_provider.replace("ExecutionProvider", ""), source() === "server" && s.vcam && `virtual cam: ${s.vcam}`].filter(Boolean);
   $("#facts").textContent = facts.join("  ·  ");
   if (s.error) showError(s.error);

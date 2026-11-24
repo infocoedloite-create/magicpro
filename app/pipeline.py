@@ -31,7 +31,8 @@ RESTART_KEYS = {"camera", "camera_backend", "resolution", "fps"}
 class Settings:
     # capture / output
     input_source: str = "browser"      # browser (webcam streamed from the page) | server (camera on this machine)
-    stream_quality: int = 85           # JPEG quality of frames sent back to the browser
+    stream_quality: int = 85           # JPEG quality (fallback mode for browsers without WebCodecs)
+    stream_bitrate_mbps: float = 8.0   # H.264 bitrate, both directions
     camera: int = 0
     camera_backend: str = "dshow"      # dshow | msmf | any
     resolution: str = "1080p"
@@ -104,7 +105,7 @@ class Engine:
         self._last_faces, self._miss = [], 0
         self.stats = {"fps": 0.0, "latency_ms": 0.0, "detect_ms": 0.0, "swap_ms": 0.0,
                       "enhance_ms": 0.0, "faces": 0, "camera": "", "output": "",
-                      "swap_provider": "", "status": "idle", "error": "", "vcam": "off"}
+                      "swap_provider": "", "status": "idle", "error": "", "vcam": "off", "encoder": ""}
         self._pick_default_models()
 
     # ---------- settings ----------

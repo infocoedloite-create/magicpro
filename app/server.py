@@ -138,6 +138,32 @@ async def stream(ws: WebSocket):
             engine.stats.update(status="idle", fps=0.0)
 
 
+@app.websocket("/ws/h264")
+async def stream_h264(ws: WebSocket):
+    """Browser WebCodecs mode: H.264 in, swapped H.264 out (see app/h264stream.py)."""
+    from .h264stream import H264Session
+
+    await ws.accept()
+    engine.browser_clients += 1
+    session = H264Session(engine, asyncio.get_running_loop(), ws.send_bytes, ws.send_text)
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            if msg.get("bytes"):
+                session.feed(msg["bytes"])
+            elif msg.get("text"):
+                session.control(msg["text"])
+    except Exception:  # noqa: BLE001  client went away
+        pass
+    finally:
+        await run_in_threadpool(session.close)
+        engine.browser_clients -= 1
+        if engine.browser_clients == 0 and not engine.running:
+            engine.stats.update(status="idle", fps=0.0)
+
+
 @app.get("/video.mjpg")
 def video(full: int = 0):
     return StreamingResponse(engine.mjpeg(bool(full)),

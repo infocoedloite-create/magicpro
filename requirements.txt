@@ -1,6 +1,7 @@
 numpy>=1.26,<3
 opencv-python-headless>=4.9
 simplejpeg>=1.7
+av>=14            # H.264 decode/encode (NVENC when available) for the WebCodecs stream
 onnx>=1.16
 # GPU runtime + CUDA 12 / cuDNN 9 DLLs from pip (RTX PRO 6000 Blackwell needs CUDA 12.8+ builds: ORT >= 1.22)
 onnxruntime-gpu[cuda,cudnn]>=1.22

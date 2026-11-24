@@ -100,7 +100,8 @@
           </select></label>
         <div class="browser-only">
           <label class="field"><span>Webcam</span><select id="sel-bcam"></select></label>
-          <label class="range"><span>Upload JPEG quality <output></output></span><input type="range" id="send-q" min="50" max="95" step="5" value="70"></label>
+          <label class="range"><span>Video bitrate, Mbit/s <output></output></span><input type="range" data-key="stream_bitrate_mbps" min="2" max="20" step="1"></label>
+          <label class="range"><span>Upload JPEG quality (fallback) <output></output></span><input type="range" id="send-q" min="50" max="95" step="5" value="70"></label>
           <label class="range"><span>Return JPEG quality <output></output></span><input type="range" data-key="stream_quality" min="50" max="95" step="5"></label>
         </div>
         <div class="row server-only">
