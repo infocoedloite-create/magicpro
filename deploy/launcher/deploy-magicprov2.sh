@@ -64,7 +64,7 @@ deploy)
   case "$RAZORPAY_KEY_ID" in rzp_test_*|"") ;; *) echo "Only a rzp_test_ key: payments stay in test mode."; exit 1;; esac
   g run deploy "$SERVICE" --source deploy/launcher --region "$REGION" --service-account "$SA" \
     --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 512Mi --cpu 1 \
-    --set-env-vars "^@^SITE_URL=https://$DOMAIN@STORE=firestore@FIRESTORE_PROJECT=$PROJECT@GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID@RAZORPAY_KEY_ID=$RAZORPAY_KEY_ID@RAZORPAY_MODE=test@ADMIN_EMAILS=$ADMIN_EMAILS@SUPPORT_EMAIL=$SUPPORT_EMAIL@POOL_MIN_WARM=0" \
+    --set-env-vars "^|^SITE_URL=https://$DOMAIN|STORE=firestore|FIRESTORE_PROJECT=$PROJECT|GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID|RAZORPAY_KEY_ID=$RAZORPAY_KEY_ID|RAZORPAY_MODE=test|ADMIN_EMAILS=$ADMIN_EMAILS|SUPPORT_EMAIL=$SUPPORT_EMAIL|POOL_MIN_WARM=0" \
     --set-secrets "MAGIC_SESSION_SECRET=magicpro-session-secret:latest,GOOGLE_CLIENT_SECRET=google-client-secret:latest,RAZORPAY_KEY_SECRET=razorpay-key-secret:latest,RAZORPAY_WEBHOOK_SECRET=razorpay-webhook-secret:latest,VAST_API_KEY=vast-api-key:latest,POOL_SECRET=pool-secret:latest"
   g run services describe "$SERVICE" --region "$REGION" --format='value(status.url)'
   ;;
