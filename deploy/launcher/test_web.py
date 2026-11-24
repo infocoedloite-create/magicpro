@@ -301,12 +301,20 @@ def test_secretless_signin():
         seen.update(who={"sub": "s1", "email": "Who@Example.com", "name": "Who"}, aud=aud,
                     nonce=q["nonce"][0] if nonce_ok else "replayed")
         state = q["state"][0] if state_ok else "WRONG"
+        # what a browser sends for Google's form_post: a cross-site POST from accounts.google.com
         r = c.post("/auth/callback", content=f"id_token={token}&state={state}",
-                   headers={"Content-Type": "application/x-www-form-urlencoded"}, follow_redirects=False)
+                   headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://accounts.google.com",
+                            "Referer": "https://accounts.google.com/", "Sec-Fetch-Site": "cross-site"},
+                   follow_redirects=False)
+        assert r.status_code in (302, 303), (r.status_code, r.text)
         return c, r.headers["location"]
 
     c, loc = attempt("good")
     assert loc == "/app" and c.get("/api/me").json()["email"] == "who@example.com"
+    # the exemption is only for the callback: other POSTs from a foreign site are still refused
+    for path in ("/api/start", "/logout", "/api/redeem"):
+        r = c.post(path, json={}, headers={"Origin": "https://evil.example"})
+        assert r.status_code == 403 and "Cross-site" in r.text, (path, r.status_code)
     assert attempt("good", state_ok=False)[1] == "/?signin=failed"
     assert attempt("forged")[1] == "/?signin=failed"
     assert attempt("good", nonce_ok=False)[1] == "/?signin=failed"

@@ -93,11 +93,14 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
     app.state.store, app.state.pool, app.state.settings = db, pool, S
 
     machine = ("/api/gpu/usage", "/api/pay/webhook", "/api/node/heartbeat", "/api/pool/tick")
+    # Google posts the ID token here from accounts.google.com (response_mode=form_post). Cross-site by
+    # design; the one-time state in our signed OAuth cookie, the nonce and Google's check guard it.
+    oauth_callbacks = ("/auth/callback",)
 
     @app.middleware("http")
     async def same_origin_posts(request: Request, call_next):
         """Signed-in POSTs must come from our own pages (the cookie is SameSite=Lax as well)."""
-        if request.method == "POST" and request.url.path not in machine:
+        if request.method == "POST" and request.url.path not in machine + oauth_callbacks:
             origin = request.headers.get("origin") or request.headers.get("referer") or ""
             if origin and urlparse(origin).netloc != urlparse(S.site_url).netloc and urlparse(origin).netloc != request.url.netloc:
                 return JSONResponse({"detail": "Cross-site request refused."}, 403)
