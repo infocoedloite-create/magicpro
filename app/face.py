@@ -35,7 +35,12 @@ class FaceDetector:
     }
 
     def __init__(self, path):
-        self.session = create_session(path)
+        import onnxruntime as ort
+        meta = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]).get_inputs()[0]
+        dynamic = not isinstance(meta.shape[2], int)
+        # TensorRT profile covers the detector sizes offered in the UI (320 / 480 / 640)
+        shapes = {meta.name: ((1, 3, 320, 320), (1, 3, 640, 640), (1, 3, 640, 640))} if dynamic else None
+        self.session = create_session(path, trt_shapes=shapes)
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         self.dtype = input_dtype(inp)
@@ -96,7 +101,8 @@ class FaceDetector:
 
 class FaceRecognizer:
     def __init__(self, path):
-        self.session = create_session(path)
+        # used only when a photo is added to the library: CUDA is plenty, skip a TensorRT build
+        self.session = create_session(path, use_trt=False)
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         self.dtype = input_dtype(inp)

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .pipeline import Engine, list_models
+from .pipeline import Engine, TrackState, list_models, list_swappers
 
 engine = Engine()
 
@@ -36,11 +36,11 @@ def state():
     engine._pick_default_models()
     return {
         "settings": engine.settings_dict(),
-        "swappers": list_models(config.SWAPPERS),
+        "swappers": list_swappers(),
         "enhancers": list_models(config.ENHANCERS),
         "library": engine.library.items(),
         "running": engine.running,
-        "stats": engine.stats,
+        "stats": engine.cluster_stats(),
         "runtime": engine.runtime(),
         "models_ready": config.DETECTOR.exists() and config.RECOGNIZER.exists(),
     }
@@ -48,7 +48,7 @@ def state():
 
 @app.get("/api/stats")
 def stats():
-    return {"running": engine.running, "browser_clients": engine.browser_clients, **engine.stats}
+    return engine.cluster_stats()
 
 
 @app.post("/api/settings")
@@ -107,6 +107,7 @@ async def stream(ws: WebSocket):
     link drops frames instead of building up delay; the client keeps a few frames in flight."""
     await ws.accept()
     engine.browser_clients += 1
+    track = TrackState()
     slot = {"data": None}
     ready = asyncio.Event()
 
@@ -122,7 +123,7 @@ async def stream(ws: WebSocket):
             data, slot["data"] = slot["data"], None
             if not data or len(data) < 9:
                 continue
-            out = await run_in_threadpool(engine.process_jpeg, data[8:])
+            out = await run_in_threadpool(engine.process_jpeg, data[8:], track)
             if out is not None:
                 await ws.send_bytes(data[:4] + out)
 

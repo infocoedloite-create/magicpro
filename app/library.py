@@ -1,5 +1,6 @@
 """Source-face library: uploaded photos with their ArcFace embeddings on disk."""
 import json
+import os
 import threading
 import time
 import uuid
@@ -18,15 +19,37 @@ class FaceLibrary:
         self.lock = threading.Lock()
         self._emb_cache = {}
         self.items_by_id = {}
+        self._mtime = 0.0
+        self._load()
+
+    def _load(self):
+        items = {}
         if self.index_file.exists():
+            self._mtime = self.index_file.stat().st_mtime
             for it in json.loads(self.index_file.read_text(encoding="utf-8")):
-                if (root / f"{it['id']}.npy").exists():
-                    self.items_by_id[it["id"]] = it
+                if (self.root / f"{it['id']}.npy").exists():
+                    items[it["id"]] = it
+        self.items_by_id = items
+        self._emb_cache = {}
+
+    def sync(self):
+        """Reload if another worker process changed the library."""
+        try:
+            m = self.index_file.stat().st_mtime
+        except FileNotFoundError:
+            return
+        if m != self._mtime:
+            with self.lock:
+                self._load()
 
     def _save(self):
-        self.index_file.write_text(json.dumps(list(self.items_by_id.values()), indent=1), encoding="utf-8")
+        tmp = self.index_file.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(list(self.items_by_id.values()), indent=1), encoding="utf-8")
+        os.replace(tmp, self.index_file)
+        self._mtime = self.index_file.stat().st_mtime
 
     def items(self):
+        self.sync()
         with self.lock:
             return sorted(self.items_by_id.values(), key=lambda i: i["created"], reverse=True)
 
@@ -69,12 +92,14 @@ class FaceLibrary:
             "score": round(face.score, 3),
             "thumb": f"/library-files/{item_id}_thumb.jpg",
         }
+        self.sync()                       # don't overwrite another worker's newer index
         with self.lock:
             self.items_by_id[item_id] = item
             self._save()
         return item
 
     def delete(self, item_id):
+        self.sync()
         with self.lock:
             if self.items_by_id.pop(item_id, None) is None:
                 return False

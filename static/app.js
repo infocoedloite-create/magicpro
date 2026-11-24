@@ -18,7 +18,7 @@ function fmt(el) {
 function fillSelect(sel, items, current, noneLabel) {
   sel.innerHTML = "";
   if (noneLabel) sel.add(new Option(noneLabel, ""));
-  for (const m of items) sel.add(new Option(m.size_mb ? `${m.name} · ${m.size_mb} MB` : m.name, m.id));
+  for (const m of items) sel.add(new Option(m.detail ? `${m.name} · ${m.detail}` : m.size_mb ? `${m.name} · ${m.size_mb} MB` : m.name, m.id));
   if (!items.length && !noneLabel) sel.add(new Option("No models in models/swappers", ""));
   sel.value = current ?? "";
 }

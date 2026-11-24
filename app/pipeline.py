@@ -7,10 +7,12 @@ Latency design:
 """
 import json
 import os
+import tempfile
 import threading
 import time
 import traceback
 from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -24,6 +26,7 @@ from .onnx_utils import runtime_info
 from .swapper import FaceSwapper
 
 RESOLUTIONS = {"720p": (1280, 720), "1080p": (1920, 1080)}
+STATS_DIR = Path(tempfile.gettempdir()) / f"magicpro-stats-{config.PORT}"
 RESTART_KEYS = {"camera", "camera_backend", "resolution", "fps"}
 
 
@@ -80,9 +83,48 @@ def list_models(folder):
             for p in sorted(folder.glob("*.onnx"))]
 
 
+# High-resolution swap presets built on inswapper_128 with pixel boost. A real .onnx file with the
+# same id in models/swappers takes precedence over the preset.
+SWAP_PRESETS = {
+    "inswapper_512_live": {"base": "inswapper_128_fp16", "boost": 2, "name": "InSwapper 512 Live",
+                           "detail": "256 px swap, fast"},
+    "inswapper_512": {"base": "inswapper_128_fp16", "boost": 4, "name": "InSwapper 512",
+                      "detail": "512 px swap"},
+    "inswapper_studio": {"base": "inswapper_128", "boost": 4, "name": "InSwapper Studio",
+                         "detail": "512 px, full precision + skin tone match", "color_match": 0.6},
+}
+
+
+def list_swappers():
+    files = list_models(config.SWAPPERS)
+    ids = {m["id"] for m in files}
+    presets = [{"id": k, "name": v["name"], "detail": v["detail"]}
+               for k, v in SWAP_PRESETS.items() if v["base"] in ids and k not in ids]
+    return files + presets
+
+
+def resolve_swapper(name):
+    """-> (model file id, pixel boost, preset colour match)"""
+    p = SWAP_PRESETS.get(name)
+    if p and not (config.SWAPPERS / f"{name}.onnx").exists():
+        return p["base"], p["boost"], p.get("color_match", 0.0)
+    return name, 1, 0.0
+
+
+class TrackState:
+    """Per-stream face tracking (smoothing + hold frames). Never shared between users."""
+
+    def __init__(self):
+        self.smoother = KpsSmoother()
+        self.last_faces = []
+        self.miss = 0
+
+
 class Engine:
     def __init__(self):
         self.s = Settings()
+        self._settings_mtime = 0.0
+        self._settings_checked = 0.0
         self._load_settings()
         self._lock = threading.RLock()
         self._det = self._rec = None
@@ -97,27 +139,87 @@ class Engine:
         self._in_frame, self._in_time, self._in_seq = None, 0.0, 0
         self._out_cond = threading.Condition()
         self._out_frame, self._out_seq, self._out_time = None, 0, 0.0
-        self._proc_lock = threading.Lock()      # one GPU pipeline, shared by server camera and browser streams
+        self._fps_lock = threading.Lock()
         self._fps_t, self._fps_n = time.perf_counter(), 0
         self.browser_clients = 0
         self._vcam = None
-        self._smoother = KpsSmoother()
-        self._last_faces, self._miss = [], 0
+        self._camera_track = TrackState()       # the server-camera stream's own tracking state
         self.stats = {"fps": 0.0, "latency_ms": 0.0, "detect_ms": 0.0, "swap_ms": 0.0,
                       "enhance_ms": 0.0, "faces": 0, "camera": "", "output": "",
                       "swap_provider": "", "status": "idle", "error": "", "vcam": "off", "encoder": ""}
         self._pick_default_models()
+        STATS_DIR.mkdir(parents=True, exist_ok=True)
+        threading.Thread(target=self._stats_writer, name="stats", daemon=True).start()
+
+    # ---------- stats shared between worker processes ----------
+    def _stats_writer(self):
+        path = STATS_DIR / f"{os.getpid()}.json"
+        while True:
+            try:
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps({**self.stats, "pid": os.getpid(), "t": time.time(),
+                                           "browser_clients": self.browser_clients, "running": self.running}))
+                os.replace(tmp, path)
+            except OSError:
+                pass
+            time.sleep(1.0)
+
+    def cluster_stats(self):
+        """Stats of all worker processes combined (fps and timings weighted by streams)."""
+        now, workers = time.time(), []
+        for f in STATS_DIR.glob("*.json"):
+            try:
+                d = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if now - d.get("t", 0) < 3:
+                workers.append(d)
+            elif now - d.get("t", 0) > 60:
+                f.unlink(missing_ok=True)
+        if not workers:
+            return {"running": self.running, "browser_clients": self.browser_clients, **self.stats}
+        active = [w for w in workers if w["browser_clients"] or w["running"]]
+        out = dict(max(workers, key=lambda w: (w["browser_clients"], w["t"])))
+        out["browser_clients"] = sum(w["browser_clients"] for w in workers)
+        out["running"] = any(w["running"] for w in workers)
+        out["workers"] = len(workers)
+        if active:
+            weight = lambda w: w["browser_clients"] + (1 if w["running"] else 0)  # noqa: E731
+            total = sum(weight(w) for w in active)
+            for k in ("fps", "latency_ms", "detect_ms", "swap_ms", "enhance_ms"):
+                out[k] = round(sum(w.get(k, 0) * weight(w) for w in active) / total, 1)
+            out["status"] = "live"
+        out["error"] = next((w["error"] for w in workers if w.get("error")), "")
+        for k in ("pid", "t"):
+            out.pop(k, None)
+        return out
 
     # ---------- settings ----------
     def _load_settings(self):
         if config.SETTINGS_FILE.exists():
             try:
+                self._settings_mtime = config.SETTINGS_FILE.stat().st_mtime
                 self._apply(json.loads(config.SETTINGS_FILE.read_text(encoding="utf-8")))
             except Exception as e:  # noqa: BLE001
                 print(f"[settings] ignored broken settings.json: {e}")
 
+    def sync(self):
+        """Pick up settings and library changes made by other worker processes (cheap: one stat
+        per file at most twice a second)."""
+        now = time.perf_counter()
+        if now - self._settings_checked < 0.5:
+            return
+        self._settings_checked = now
+        try:
+            m = config.SETTINGS_FILE.stat().st_mtime
+            if m != self._settings_mtime:
+                self._load_settings()
+        except FileNotFoundError:
+            pass
+        self.library.sync()
+
     def _pick_default_models(self):
-        sw = [m["id"] for m in list_models(config.SWAPPERS)]
+        sw = [m["id"] for m in list_swappers()]
         if self.s.swapper not in sw:
             pref = [m for m in ("inswapper_128_fp16", "inswapper_128") if m in sw]
             self.s.swapper = pref[0] if pref else (sw[0] if sw else "")
@@ -155,7 +257,10 @@ class Engine:
         if changed & RESTART_KEYS and self.running:
             self._restart_cam.set()
         if changed:
-            config.SETTINGS_FILE.write_text(json.dumps(asdict(self.s), indent=1), encoding="utf-8")
+            tmp = config.SETTINGS_FILE.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(asdict(self.s), indent=1), encoding="utf-8")
+            os.replace(tmp, config.SETTINGS_FILE)       # atomic: other workers never read half a file
+            self._settings_mtime = config.SETTINGS_FILE.stat().st_mtime
         return asdict(self.s)
 
     def settings_dict(self):
@@ -276,21 +381,28 @@ class Engine:
             cap.release()
 
     # ---------- processing ----------
-    def _safe_process(self, frame):
-        with self._proc_lock:
-            try:
-                out = self._process(frame)
-                self.stats.update(status="live", error="")
-            except Exception as e:  # noqa: BLE001  keep the stream alive, show the error
-                traceback.print_exc()
-                self.stats.update(status="error", error=str(e))
-                out = frame
-        self._fps_n += 1
-        now = time.perf_counter()
-        if now - self._fps_t >= 1.0:
-            self.stats["fps"] = round(self._fps_n / (now - self._fps_t), 1)
-            self._fps_t, self._fps_n = now, 0
+    def _safe_process(self, frame, track=None):
+        """Thread-safe: several streams process concurrently (ONNX Runtime and OpenCV release the
+        GIL), each with its own TrackState so faces never leak between users."""
+        self.sync()
+        try:
+            out = self._process(frame, track or self._camera_track)
+            self.stats.update(status="live", error="")
+        except Exception as e:  # noqa: BLE001  keep the stream alive, show the error
+            traceback.print_exc()
+            self.stats.update(status="error", error=str(e))
+            out = frame
+        with self._fps_lock:
+            self._fps_n += 1
+            now = time.perf_counter()
+            if now - self._fps_t >= 1.0:
+                # frames per second per stream
+                self.stats["fps"] = round(self._fps_n / (now - self._fps_t) / max(1, self.active_streams()), 1)
+                self._fps_t, self._fps_n = now, 0
         return out
+
+    def active_streams(self):
+        return self.browser_clients + (1 if self.running else 0)
 
     def _process_loop(self):
         seen = 0
@@ -304,19 +416,19 @@ class Engine:
             self._emit(out)
             self.stats["latency_ms"] = round((time.perf_counter() - t_in) * 1000, 1)
 
-    def process_jpeg(self, data: bytes):
+    def process_jpeg(self, data: bytes, track=None):
         """Browser mode: JPEG in -> swapped JPEG out. Returns None for an unreadable frame."""
         t = time.perf_counter()
         frame = codec.decode(data)
         if frame is None:
             return None
-        out = self._safe_process(frame)
+        out = self._safe_process(frame, track)
         self._publish(out)
         jpg = codec.encode(out, self.s.stream_quality)
         self.stats["latency_ms"] = round((time.perf_counter() - t) * 1000, 1)
         return jpg
 
-    def _process(self, frame):
+    def _process(self, frame, track):
         s = self.s
         if s.mirror:
             frame = cv2.flip(frame, 1)
@@ -326,7 +438,8 @@ class Engine:
         self.stats["output"] = f"{w}x{h}"
 
         emb = self.library.embedding(s.source_ids) if s.swap_enabled else None
-        swapper = self._get(self._swappers, config.SWAPPERS, FaceSwapper, s.swapper) if emb is not None else None
+        model_id, boost, preset_color = resolve_swapper(s.swapper)
+        swapper = self._get(self._swappers, config.SWAPPERS, FaceSwapper, model_id) if emb is not None else None
         if swapper is None:
             self.stats.update(faces=0, detect_ms=0.0, swap_ms=0.0, enhance_ms=0.0)
             if s.disclosure_label and emb is not None:
@@ -337,17 +450,18 @@ class Engine:
         t0 = time.perf_counter()
         faces = self.detector.detect(frame, s.det_size, s.det_thresh, max_faces=0 if s.many_faces else 1)
         if faces:
-            self._last_faces, self._miss = faces, 0
-        elif self._last_faces and self._miss < s.hold_frames:
-            faces, self._miss = self._last_faces, self._miss + 1   # bridge brief misses on side views
-        faces = self._smoother(faces, s.smoothing)
+            track.last_faces, track.miss = faces, 0
+        elif track.last_faces and track.miss < s.hold_frames:
+            faces, track.miss = track.last_faces, track.miss + 1   # bridge brief misses on side views
+        faces = track.smoother(faces, s.smoothing)
         t1 = time.perf_counter()
 
         latent = swapper.latent(emb)
-        mask = swap_mask(swapper.size, round(s.mask_blur, 2), s.mask_top, s.mask_right, s.mask_bottom,
+        mask = swap_mask(swapper.output_size(boost), round(s.mask_blur, 2), s.mask_top, s.mask_right, s.mask_bottom,
                          s.mask_left, round(s.mouth_size, 2) if s.mouth_mask else 0.0)
+        color = max(s.color_match, preset_color)
         for f in faces:
-            swapper.swap_into(frame, f.kps, latent, mask, s.color_match)
+            swapper.swap_into(frame, f.kps, latent, mask, color, boost)
         t2 = time.perf_counter()
 
         enhancer = self._get(self._enhancers, config.ENHANCERS, FaceEnhancer, s.enhancer)

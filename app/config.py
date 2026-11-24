@@ -14,9 +14,9 @@ STATIC = ROOT / "static"
 SETTINGS_FILE = Path(os.environ.get("MAGIC_SETTINGS", ROOT / "settings.json"))
 
 GPU_ID = int(os.environ.get("MAGIC_GPU", "0"))
-# TensorRT gives the lowest latency on RTX cards but needs TensorRT 10 installed.
-# First start builds engines (minutes); they are cached in models/.trt_cache.
-USE_TENSORRT = os.environ.get("MAGIC_TRT", "0") == "1"
+# TensorRT FP16 (2-3x faster on RTX) is used automatically when its libraries are installed
+# (pip tensorrt-cu12-libs); MAGIC_TRT=0 turns it off. Engines are cached in models/.trt_cache.
+USE_TENSORRT = os.environ.get("MAGIC_TRT", "auto")
 HOST = os.environ.get("MAGIC_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MAGIC_PORT", "7860"))
 

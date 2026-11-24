@@ -5,6 +5,8 @@ av>=14            # H.264 decode/encode (NVENC when available) for the WebCodecs
 onnx>=1.16
 # GPU runtime + CUDA 12 / cuDNN 9 DLLs from pip (RTX PRO 6000 Blackwell needs CUDA 12.8+ builds: ORT >= 1.22)
 onnxruntime-gpu[cuda,cudnn]>=1.22
+# TensorRT FP16 engines, used automatically when present (2-3x faster models on RTX GPUs)
+tensorrt-cu12-libs>=10,<11; sys_platform == "linux"
 fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9

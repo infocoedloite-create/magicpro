@@ -49,8 +49,20 @@ class FaceSwapper:
         side = self.path.with_suffix(".json")
         opts = json.loads(side.read_text()) if side.exists() else {}
 
-        self.session = create_session(self.path)
+        # models/batched/<name>.onnx (made by tools/make_batchable.py) accepts many crops per call
+        batched = self.path.parent.parent / "batched" / self.path.name
+        model = batched if batched.exists() else self.path
+        shapes = None
+        if batched.exists():   # TensorRT profile: 1..32 crops per call, tuned for 16 (512 pixel boost)
+            import onnx
+            g = onnx.load(str(model), load_external_data=False).graph
+            shapes = {}
+            for i in g.input:
+                d = [x.dim_value for x in i.type.tensor_type.shape.dim][1:]
+                shapes[i.name] = ((1, *d), (16, *d), (32, *d))
+        self.session = create_session(model, trt_shapes=shapes)
         ins = self.session.get_inputs()
+        self.batchable = not isinstance(ins[0].shape[0], int)
         tgt = [i for i in ins if len(i.shape) == 4]
         src = [i for i in ins if len(i.shape) != 4]
         if len(tgt) != 1 or len(src) != 1:
@@ -60,7 +72,9 @@ class FaceSwapper:
         dim = self.t_in.shape[2]
         self.size = int(opts.get("size", dim if isinstance(dim, int) else 128))
         self.out_name = self.session.get_outputs()[0].name
-        self.template = template(opts.get("template", "arcface_128"), self.size)
+        self.template_kind = opts.get("template", "arcface_128")
+        self.template = template(self.template_kind, self.size)
+        self._boost_templates = {1: self.template}
         self.signed = opts.get("normalize", "0_1") == "-1_1"
         self.emap = load_emap(self.path) if opts.get("use_emap", True) else None
         self.provider = self.session.get_providers()[0]
@@ -78,23 +92,47 @@ class FaceSwapper:
         return lat
 
     def _infer(self, crop, latent):
+        return self._infer_many([crop], latent)[0]
+
+    def _infer_many(self, crops, latent):
+        """Swap several aligned crops (same identity). One GPU call when the model is batchable."""
+        if not self.batchable and len(crops) > 1:
+            return [self._infer_many([c], latent)[0] for c in crops]
         if self.signed:
-            blob = cv2.dnn.blobFromImage(crop, 1 / 127.5, (self.size, self.size),
-                                         (127.5, 127.5, 127.5), swapRB=True)
+            blob = cv2.dnn.blobFromImages(crops, 1 / 127.5, (self.size, self.size), (127.5, 127.5, 127.5), swapRB=True)
         else:
-            blob = cv2.dnn.blobFromImage(crop, 1 / 255.0, (self.size, self.size), (0, 0, 0), swapRB=True)
+            blob = cv2.dnn.blobFromImages(crops, 1 / 255.0, (self.size, self.size), (0, 0, 0), swapRB=True)
+        lat = np.repeat(latent.reshape(1, -1), len(crops), axis=0)
         pred = self.session.run([self.out_name], {
             self.t_in.name: blob.astype(self.t_dtype, copy=False),
-            self.s_in.name: latent.astype(self.s_dtype, copy=False),
-        })[0][0].astype(np.float32).transpose(1, 2, 0)
+            self.s_in.name: lat.astype(self.s_dtype, copy=False),
+        })[0].astype(np.float32).transpose(0, 2, 3, 1)
         if self.signed:
             pred = (pred + 1.0) * 0.5
-        return np.ascontiguousarray(np.clip(pred, 0, 1)[:, :, ::-1] * 255.0)
+        pred = np.clip(pred, 0, 1)[..., ::-1] * 255.0
+        return [np.ascontiguousarray(p) for p in pred]
 
-    def swap_into(self, frame, kps, latent, mask, color_strength=0.0):
-        M = estimate_affine(kps, self.template)
-        crop = warp_face(frame, M, self.size)
-        out = self._infer(crop, latent)
+    def output_size(self, boost=1):
+        return self.size * boost
+
+    def swap_into(self, frame, kps, latent, mask, color_strength=0.0, boost=1):
+        """boost > 1 = pixel boost: align the face at size*boost, split it into boost x boost
+        interleaved sub-images of the model's native size, swap each and re-interleave. Gives a
+        real 256/512 swap from a 128 model (mask must be output_size(boost) square)."""
+        size = self.size * boost
+        tmpl = self._boost_templates.get(boost)
+        if tmpl is None:
+            tmpl = self._boost_templates[boost] = template(self.template_kind, size)
+        M = estimate_affine(kps, tmpl)
+        crop = warp_face(frame, M, size)
+        if boost == 1:
+            out = self._infer(crop, latent)
+        else:
+            out = np.empty((size, size, 3), np.float32)
+            cells = [(i, j) for i in range(boost) for j in range(boost)]
+            results = self._infer_many([np.ascontiguousarray(crop[i::boost, j::boost]) for i, j in cells], latent)
+            for (i, j), r in zip(cells, results):
+                out[i::boost, j::boost] = r
         if color_strength > 0:
             out = color_match(out, crop, mask, color_strength)
         paste_back(frame, out, M, mask)

@@ -62,6 +62,8 @@ class H264Session:
         self.enc_cond = threading.Condition()
         self.processed = None        # (id, bgr) newest processed frame
         self.force_key = True
+        from .pipeline import TrackState
+        self.track = TrackState()    # this user's own face tracking
         self.encoder = None
         self.encoder_name = ""
         self.t0 = time.perf_counter()
@@ -137,7 +139,7 @@ class H264Session:
                 fid, bgr = self.decoded
                 self.decoded = None
             t = time.perf_counter()
-            out = self.engine._safe_process(bgr)
+            out = self.engine._safe_process(bgr, self.track)
             self.engine._publish(out)
             self.engine.stats["latency_ms"] = round((time.perf_counter() - t) * 1000, 1)
             with self.enc_cond:
