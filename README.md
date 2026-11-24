@@ -226,55 +226,73 @@ python deploy/launcher/test_admin.py   # blocked user, daily cap, session cap, s
 python deploy/launcher/test_web.py && python deploy/launcher/test_pool.py
 ```
 
-#### One-time setup (you do these; secrets are never typed by anyone else)
+#### One-time setup in project magicprov2 (secrets are never typed by anyone but you)
 
-Decide the Google Cloud project first (`magicprov2`, or `magic-515508` that the local `gcloud` uses);
-below it is `$PROJECT`. Region: **asia-southeast1** (Singapore), because Cloud Run custom domains
-(domain mapping) are not offered in asia-south1 (Mumbai); the video stream never passes through the
-website, so the distance doesn't matter.
+Project: **magicprov2** (billing on; Cloud Run and Artifact Registry APIs already enabled). Every
+command passes `--project magicprov2`, so the local `gcloud` default project doesn't matter and
+isn't changed. Region: **asia-southeast1** (Singapore), because Cloud Run custom domains (domain
+mapping) are not offered in asia-south1 (Mumbai); the video stream never passes through the
+website, so the distance doesn't matter. `deploy/launcher/deploy-magicprov2.sh` runs the gcloud
+steps one at a time; `bash deploy/launcher/deploy-magicprov2.sh check` only reads.
 
-1. **Firestore:** console → Firestore → Create database → Native mode, location `asia-southeast1`.
-2. **OAuth consent screen:** console → Google Auth Platform → Branding: app name "Magic Pro",
-   support e-mail, authorised domain `nacgenai.in`, links to `https://magicpro.nacgenai.in/privacy` and
-   `/terms`. Audience: External. Data access: scopes `openid`, `email`, `profile` only (no review needed).
-   Publish the app (while "Testing", only listed test users can sign in).
-3. **OAuth client:** Google Auth Platform → Clients → Create → Web application. Authorised redirect
-   URI: `https://magicpro.nacgenai.in/auth/callback` (add the `…run.app/auth/callback` URL too for
-   testing before the domain works). Keep the client id; the secret goes to Secret Manager.
-4. **Razorpay test keys:** dashboard in **Test mode** → Account & Settings → API keys → Generate
-   test key. Webhooks → Add: URL `https://magicpro.nacgenai.in/api/pay/webhook`, events
-   `payment.captured` and `order.paid`, a webhook secret of your choice.
-5. **Secret Manager** (Security → Secret Manager), one secret each:
-   `magicpro-session-secret` (≥ 32 random bytes, e.g. `python -c "import secrets;print(secrets.token_urlsafe(48))"`;
-   the same value goes to the GPU nodes), `google-client-secret`, `razorpay-key-secret`,
-   `razorpay-webhook-secret`, `vast-api-key`, `pool-secret` (another random string).
-6. **Deploy** (Cloud Shell, from the project folder):
+| Step | Who | What it changes | Expected cost |
+|---|---|---|---|
+| 1. `deploy-magicprov2.sh apis` | gcloud | enables Cloud Build, Secret Manager, Firestore APIs | free |
+| 2. `deploy-magicprov2.sh firestore` | gcloud | Firestore database (Native, asia-southeast1) | free tier (1 GiB, 50k reads / 20k writes a day); beyond that cents |
+| 3. OAuth consent screen + client | you, console | Google Auth Platform branding, client id/secret | free |
+| 4. Razorpay test keys + webhook | you, Razorpay | test mode only | free |
+| 5. Six secrets in Secret Manager | you, console | `magicpro-session-secret`, `google-client-secret`, `razorpay-key-secret`, `razorpay-webhook-secret`, `vast-api-key`, `pool-secret` | about US$0.36/month (US$0.06 per secret version a month) |
+| 6. `deploy-magicprov2.sh account` and `secrets` | gcloud | service account `magicpro-web`, Firestore user role, read access to the 6 secrets | free |
+| 7. `deploy-magicprov2.sh deploy` | gcloud | Cloud Build builds the image into Artifact Registry, Cloud Run service `magicpro-web` (min 0, max 1 instance, public) | build: within the free build minutes; image storage ~0.2 GB within the 0.5 GB free; Cloud Run: within the free tier at this traffic (requests while GPUs run are short heartbeats) |
+| 8. `deploy-magicprov2.sh domain` + GoDaddy records | gcloud + you | domain mapping for magicpro.nacgenai.in (preview feature), TXT and CNAME at GoDaddy | free |
+
+Details for the steps you do yourself:
+
+* **OAuth consent screen:** console → Google Auth Platform (project magicprov2) → Branding: app
+  name "Magic Pro", support e-mail, authorised domain `nacgenai.in`, links to
+  `https://magicpro.nacgenai.in/privacy` and `/terms`. Audience: External. Data access: `openid`,
+  `email`, `profile` only (no Google review needed). Publish the app (while "Testing", only listed
+  test users can sign in).
+* **OAuth client:** Google Auth Platform → Clients → Create → Web application. Authorised redirect
+  URIs: `https://magicpro.nacgenai.in/auth/callback`, and the `https://…run.app/auth/callback`
+  address step 7 prints, for testing before the domain works. The client id goes in
+  `GOOGLE_CLIENT_ID` below; the secret goes to Secret Manager.
+* **Razorpay:** dashboard in **Test mode** → Account & Settings → API keys → Generate test key.
+  Webhooks → Add: URL `https://magicpro.nacgenai.in/api/pay/webhook`, events `payment.captured` and
+  `order.paid`, a webhook secret of your choice.
+* **Secret Manager** (console → Security → Secret Manager, project magicprov2): create the six
+  secrets above. `magicpro-session-secret` and `pool-secret` are long random strings, e.g.
+  `python -c "import secrets;print(secrets.token_urlsafe(48))"`; the session secret is the same value
+  the GPU nodes get as `MAGIC_SESSION_SECRET`. `vast-api-key` is a Vast.ai API key from
+  cloud.vast.ai → Account → API Keys.
+
+Then, from the repository root in Cloud Shell:
 
 ```bash
-PROJECT=<your project>; REGION=asia-southeast1; SA=magicpro-web@$PROJECT.iam.gserviceaccount.com
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com firestore.googleapis.com --project $PROJECT
-gcloud iam service-accounts create magicpro-web --project $PROJECT
-gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA --role roles/datastore.user
-for s in magicpro-session-secret google-client-secret razorpay-key-secret razorpay-webhook-secret vast-api-key pool-secret; do
-  gcloud secrets add-iam-policy-binding $s --project $PROJECT --member serviceAccount:$SA --role roles/secretmanager.secretAccessor
-done
-gcloud run deploy magicpro-web --source deploy/launcher --project $PROJECT --region $REGION --service-account $SA \
-  --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 512Mi \
-  --set-env-vars "^@^SITE_URL=https://magicpro.nacgenai.in@STORE=firestore@FIRESTORE_PROJECT=$PROJECT@GOOGLE_CLIENT_ID=<client id>@RAZORPAY_KEY_ID=<rzp_test_… key id>@RAZORPAY_MODE=test@ADMIN_EMAILS=<your e-mail>@POOL_MAX_NODES=2@POOL_MAX_INSTANCES=2@POOL_MIN_WARM=0" \
-  --set-secrets MAGIC_SESSION_SECRET=magicpro-session-secret:latest,GOOGLE_CLIENT_SECRET=google-client-secret:latest,RAZORPAY_KEY_SECRET=razorpay-key-secret:latest,RAZORPAY_WEBHOOK_SECRET=razorpay-webhook-secret:latest,VAST_API_KEY=vast-api-key:latest,POOL_SECRET=pool-secret:latest
+bash deploy/launcher/deploy-magicprov2.sh check
+bash deploy/launcher/deploy-magicprov2.sh apis
+bash deploy/launcher/deploy-magicprov2.sh firestore
+bash deploy/launcher/deploy-magicprov2.sh account
+bash deploy/launcher/deploy-magicprov2.sh secrets          # after the six secrets exist
+GOOGLE_CLIENT_ID=<client id> RAZORPAY_KEY_ID=<rzp_test_…> ADMIN_EMAILS=<your e-mail> \
+  bash deploy/launcher/deploy-magicprov2.sh deploy
 ```
 
-   `--allow-unauthenticated` is needed for a public website; the app does its own sign-in. Keep
-   `--max-instances 1` (pool timing is kept in memory). Add `POOL_IMAGE` / `POOL_IMAGE_LOGIN` once
-   the node image exists (section 2).
+`--allow-unauthenticated` is needed for a public website; the app does its own sign-in. The service
+keeps `--max-instances 1` (pool timing is kept in memory). If the first `deploy` stops with a Cloud
+Build permission error, the project's default compute service account needs the
+`roles/run.builder` role (`gcloud projects add-iam-policy-binding magicprov2 --member
+serviceAccount:<project number>-compute@developer.gserviceaccount.com --role roles/run.builder`).
+The GPU pool cap and idle time are set on the admin page (Limits); add `POOL_IMAGE` /
+`POOL_IMAGE_LOGIN` once the node image exists (section 2).
 
-7. **Custom domain** `magicpro.nacgenai.in`:
-   * Verify `nacgenai.in` as yours: run `gcloud domains verify nacgenai.in` (opens Search Console);
+**Custom domain** `magicpro.nacgenai.in` (step 8):
+   * Verify `nacgenai.in` as yours: run `gcloud domains verify nacgenai.in` while signed in with the Google account that owns magicprov2 (opens Search Console);
      it shows a TXT value. In **GoDaddy → nacgenai.in → DNS → Add record**: Type `TXT`, Name `@`,
      Value `google-site-verification=…` (exactly as shown), TTL 1 hour. Click Verify.
-   * `gcloud beta run domain-mappings create --service magicpro-web --domain magicpro.nacgenai.in --region asia-southeast1 --project $PROJECT`
+   * `bash deploy/launcher/deploy-magicprov2.sh domain` (creates the mapping and prints the record)
    * In GoDaddy add: Type `CNAME`, Name `magicpro`, Value `ghs.googlehosted.com.`, TTL 1 hour.
-     (`gcloud beta run domain-mappings describe --domain magicpro.nacgenai.in --region asia-southeast1`
+     (`gcloud beta run domain-mappings describe --domain magicpro.nacgenai.in --region asia-southeast1 --project magicprov2`
      prints the same record.) The HTTPS certificate follows within about 15–60 minutes.
    * Google marks domain mapping as a preview feature with some added latency. For production, the
      recommended upgrade is a global external Application Load Balancer with a serverless NEG
@@ -282,7 +300,7 @@ gcloud run deploy magicpro-web --source deploy/launcher --project $PROJECT --reg
      of the CNAME. Firebase Hosting doesn't suit this site: it forwards only a cookie named
      `__session`, so sign-in would break.
 
-8. **Adopt the existing GPU instance** into the pool: sign in as an admin and run in the browser
+**Adopt the existing GPU instance** into the pool: sign in as an admin and run in the browser
    console on `/admin`:
    `fetch("/api/pool/adopt", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({instance_id: "62324193"})}).then(r => r.json()).then(console.log)`.
    It labels the instance `magicpro-pool:<nonce>` and prints `MAGIC_LAUNCHER_URL` and
