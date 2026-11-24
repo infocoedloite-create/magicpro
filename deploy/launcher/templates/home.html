@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block bodyclass %}home{% endblock %}
+{% block main %}
+<!-- kind: software · palette: near-black with the product's amber, the colour of the app itself · hero: split, live product UI · moment: the time-left counter that only moves while live -->
+<section class="hero screen" data-enter>
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow">Hour packs from {{ min_price|inr }}</p>
+      <h1>Live face swap for streamers and video calls</h1>
+      <p class="lede">Pick a face you have the right to use, press Start, and your camera shows it live. Use it in OBS, Zoom, Meet or Teams, and pay only for the time you stream.</p>
+      <div class="actions">
+        <a class="btn primary big" href="/login?next=/app">Buy hours</a>
+        <a class="btn ghost big" href="#how">See how it works</a>
+      </div>
+      <p class="small muted" id="signin-note" hidden>Sign-in didn't finish. Try again, or use another Google account.</p>
+    </div>
+    <div class="app-frame" aria-label="The {{ S.brand }} studio while streaming" data-moment="meter">
+      <div class="frame-bar"><span></span><span></span><span></span><b>{{ S.brand }} studio</b></div>
+      <div class="frame-body">
+        <div class="stage">
+          <svg class="face" viewBox="0 0 320 240" role="img" aria-label="Live preview with the swapped face">
+            <defs>
+              <radialGradient id="g1" cx="50%" cy="38%" r="60%"><stop offset="0" stop-color="#f4c27a"/><stop offset="1" stop-color="#b86f2a"/></radialGradient>
+              <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#20242a"/><stop offset="1" stop-color="#121417"/></linearGradient>
+            </defs>
+            <rect width="320" height="240" fill="url(#g2)"/>
+            <ellipse cx="160" cy="250" rx="110" ry="70" fill="#2b3038"/>
+            <ellipse cx="160" cy="112" rx="52" ry="64" fill="url(#g1)"/>
+            <path d="M108 96c4-40 30-58 52-58s50 16 54 58c-12-18-30-26-54-26s-40 8-52 26z" fill="#3a2a1f"/>
+            <ellipse cx="141" cy="112" rx="5" ry="6" fill="#2a1d14"/><ellipse cx="179" cy="112" rx="5" ry="6" fill="#2a1d14"/>
+            <path d="M146 146c8 6 20 6 28 0" stroke="#7a3f1f" stroke-width="4" fill="none" stroke-linecap="round"/>
+          </svg>
+          <span class="tag-ai">AI face swap</span>
+          <span class="tag-live" id="m-live"><i></i>Live</span>
+        </div>
+        <div class="panel">
+          <p class="panel-label">Face</p>
+          <div class="chips"><span class="chip on">You · studio light</span><span class="chip">You · glasses</span></div>
+          <p class="panel-label">Time left</p>
+          <p class="meter" id="m-left">2:41:00</p>
+          <p class="small muted" id="m-state">Counting while you stream</p>
+          <button class="btn primary wide" type="button" tabindex="-1" aria-hidden="true">Stop camera</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="screen" id="uses">
+  <div class="wrap">
+    <h2>Made for streams, calls and recordings</h2>
+    <p class="lede narrow">The swapped picture plays in your browser tab. Bring it into the apps you already use.</p>
+    <div class="cards four">
+      <article class="card"><h3>Live streams</h3><p>Add the studio window to OBS or Streamlabs as a window capture and go live on YouTube, Twitch or Instagram.</p></article>
+      <article class="card"><h3>Video calls</h3><p>Start OBS Virtual Camera and pick it as your camera in Zoom, Google Meet or Microsoft Teams.</p></article>
+      <article class="card"><h3>Recordings</h3><p>Record tutorials, explainers and short videos with the same face in every take.</p></article>
+      <article class="card"><h3>Nothing to install</h3><p>Open the studio in Chrome or Edge on a laptop. Your webcam stays yours; the heavy work happens on our servers.</p></article>
+    </div>
+  </div>
+</section>
+
+<section class="screen" id="how">
+  <div class="wrap">
+    <h2>Three steps to your first stream</h2>
+    <ol class="steps">
+      <li class="card"><span class="step-n">1</span><h3>Sign in with Google</h3><p>No new password. Your hours and your faces belong to your account.</p></li>
+      <li class="card"><span class="step-n">2</span><h3>Buy an hour pack</h3><p>Pay with UPI, card or netbanking. Hours appear on your account as soon as the payment clears.</p></li>
+      <li class="card"><span class="step-n">3</span><h3>Add your face and press Start</h3><p>Upload a clear photo of a face you have the right to use. The live picture is ready within two minutes.</p></li>
+    </ol>
+  </div>
+</section>
+
+<section class="screen" id="prices">
+  <div class="wrap">
+    <h2>Hour packs</h2>
+    <p class="lede narrow">Time counts down only while your camera is streaming. Pause, close the tab or come back next week: unused hours stay on your account.</p>
+    <div class="cards {{ 'three' if packs|length == 3 else 'four' }}">
+      {% for p in packs %}
+      <article class="card price{% if loop.index == 2 %} featured{% endif %}">
+        <h3>{{ p.label }}</h3>
+        <p class="price-n">{{ p.price_inr|inr }}</p>
+        <p class="muted small">{{ (p.price_inr / p.hours)|round|int }} ₹ per hour of streaming</p>
+        <a class="btn {{ 'primary' if loop.index == 2 else 'ghost' }} wide" href="/login?next=/app">Buy {{ p.label }}</a>
+      </article>
+      {% endfor %}
+    </div>
+    <p class="small muted">Payments are handled by Razorpay.</p>
+  </div>
+</section>
+
+<section class="screen" id="rules">
+  <div class="wrap two">
+    <div>
+      <h2>Faces you have the right to use</h2>
+      <p class="lede">Use your own face, or a face whose owner has agreed in writing. Public figures need their consent too.</p>
+    </div>
+    <ul class="ticks">
+      <li>Every picture carries a visible "AI face swap" label.</li>
+      <li>No impersonation, fraud, sexual or deceptive content.</li>
+      <li>Your photos stay private to your account; delete them any time, or ask us to delete everything.</li>
+      <li>We suspend accounts that break the <a href="/acceptable-use">acceptable-use rules</a>.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="screen" id="questions">
+  <div class="wrap two">
+    <h2>Questions before you buy</h2>
+    <div class="faq">
+      <details><summary>When does my time count?</summary><p>Only while your camera is streaming to the studio. Setting up, choosing a face and pausing are free.</p></details>
+      <details><summary>Do I need a powerful computer?</summary><p>No. A laptop with a webcam and Chrome or Edge is enough; the face swap runs on our servers.</p></details>
+      <details><summary>What internet speed do I need?</summary><p>A steady upload of about 8 Mbit/s for full HD. On slower links, lower the picture size in the studio.</p></details>
+      <details><summary>Can I use it in Zoom, Meet or Teams?</summary><p>Yes, through OBS Virtual Camera: capture the studio window in OBS, start the virtual camera and choose it in your call app.</p></details>
+      <details><summary>Do hours expire?</summary><p>Bought hours stay on your account. An invite code has to be redeemed before the date shown on the invite.</p></details>
+    </div>
+  </div>
+</section>
+
+<section class="screen close" id="start">
+  <div class="wrap center">
+    <h2>Your first stream in about two minutes</h2>
+    <p class="lede">Sign in with Google, pick a pack and press Start.</p>
+    <div class="actions center"><a class="btn primary big" href="/login?next=/app">Buy hours</a></div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/site.js" defer></script>{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Terms · {{ S.brand }}{% endblock %}
+{% block main %}
+<section class="page"><div class="wrap legal">
+  <p class="draft">Draft for review by a lawyer before launch: the operator's legal name, address, refund rules, liability limits and governing law still need to be decided.</p>
+  <h1>Terms of service</h1>
+
+  <h2>The service</h2>
+  <p>{{ S.brand }} is an online service that replaces the face in your live webcam video with a face you provide, for live streams, video calls and recordings. You use it in your web browser after signing in with a Google account.</p>
+
+  <h2>Your account</h2>
+  <ul>
+    <li>You must be at least 18 years old.</li>
+    <li>You are responsible for everything done with your account. Don't share it.</li>
+    <li>You must follow the <a href="/acceptable-use">acceptable use policy</a>. Breaking it can lead to suspension or closure of your account.</li>
+  </ul>
+
+  <h2>Hours and payment</h2>
+  <ul>
+    <li>You buy hours in packs. Time is counted only while your camera is streaming to the service, to the second.</li>
+    <li>Bought hours stay on your account while the service runs. Hours from invite codes or given by us are free and have no cash value.</li>
+    <li>Payments are processed by Razorpay. We don't see or store your card or bank details.</li>
+    <li>Refunds: the rules are still to be decided and will be stated here before launch.</li>
+  </ul>
+
+  <h2>Your content</h2>
+  <p>You keep the rights to the photos you upload and the video you make. You confirm you have the right to use every face you upload, and you give us the permission we need to process them to run the service for you. You can delete your photos at any time.</p>
+
+  <h2>Availability</h2>
+  <p>We work to keep the service available but don't promise it will always be. A session can end if a server fails; when that happens, time stops counting.</p>
+
+  <h2>Changes</h2>
+  <p>We may change these terms. We will tell signed-in users about important changes before they apply.</p>
+</div></section>
+{% endblock %}

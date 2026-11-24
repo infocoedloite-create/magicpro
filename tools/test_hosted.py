@@ -180,6 +180,18 @@ def main():
     for p in ("/video.mjpg", "/snapshot.jpg", "/api/cameras"):
         check(req(B, p, ta)[0] == 403, f"{p} is blocked in hosted mode (would show others' video)")
 
+    st, _, _ = req(B, "/api/gpu/status")
+    check(st == 401, "GPU status without a session or watchdog signature is refused")
+    wd = hmac.new(a.secret.encode(), b"watchdog", hashlib.sha256).hexdigest()
+    st, _, body = req(B, "/api/gpu/status", headers={"X-Magic-Watchdog": wd})
+    check(st == 200 and "active_users" in json.loads(body), "the node watchdog reads GPU status with its signature")
+    st, _, _ = req(B, "/api/gpu/status", headers={"X-Magic-Watchdog": "0" * 64})
+    check(st == 401, "a wrong watchdog signature is refused")
+    st, _, _ = req(B, "/api/gpu/stop", ta, "POST", b'{"cid":"x"}', {"Content-Type": "application/json"})
+    check(st == 403, "a customer cannot stop the GPU for everyone")
+    st, _, body = req(B, "/api/gpu/heartbeat", ta, "POST", b'{"cid":"t1","streaming":false}', {"Content-Type": "application/json"})
+    check(st == 200, "page heartbeats work with a session")
+
     from tools.loadtest import make_clip
     packets = make_clip(a.face, 1280, 720, 30)
     got, end_msg, code = asyncio.run(stream(B, None, 3, packets))

@@ -6,6 +6,8 @@ APP_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 INTERNAL_PORT="${MAGIC_INTERNAL_PORT:-17860}"
 EXTERNAL_PORT="${MAGIC_EXTERNAL_PORT:-10100}"   # must be a free open port on the instance
 
+# MAGIC_IMAGE_BUILD=1 (docker build): write the files only; supervisor and the portal are not running yet
+BUILD="${MAGIC_IMAGE_BUILD:-}"
 bash "$APP_DIR/setup.sh"
 
 cat > /opt/supervisor-scripts/magicpro.sh <<EOF
@@ -35,6 +37,8 @@ stdout_logfile=/dev/stdout
 redirect_stderr=true
 stdout_logfile_maxbytes=0
 EOF
+
+if [ -n "$BUILD" ]; then echo "Magic Pro service files written (image build)."; exit 0; fi
 
 python3 - "$EXTERNAL_PORT" "$INTERNAL_PORT" <<'PY'
 import sys, yaml

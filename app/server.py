@@ -6,6 +6,8 @@ Hosted mode (MAGIC_SESSION_SECRET set): users arrive from the website with a sig
 reported to the website, which can end it.
 """
 import asyncio
+import hashlib
+import hmac
 import json
 import re
 import time
@@ -16,7 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config
+from . import auth, config, gpucontrol
 from .pipeline import Engine, TrackState, list_models, list_swappers
 
 engine = Engine()
@@ -30,6 +32,7 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="Magic Pro Live Face Swap", lifespan=lifespan)
+gpucontrol.attach(app, engine)   # GPU on/off: heartbeats, status, Stop GPU now
 app.mount("/static", StaticFiles(directory=config.STATIC), name="static")
 
 NO_CACHE = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
@@ -47,16 +50,29 @@ color:#1a1203;border-radius:4px;text-decoration:none;font-weight:600">Back to Ma
         status_code=401, headers=NO_CACHE)
 
 
+# The node's own watchdog reads these without a user session, proving itself with
+# X-Magic-Watchdog = hex hmac_sha256(MAGIC_SESSION_SECRET, "watchdog") (deploy/vast/watchdog)
+WATCHDOG_PATHS = ("/api/gpu/status", "/api/gpu/tunnel")
+WATCHDOG_TOKEN = hmac.new(auth.SECRET.encode(), b"watchdog", hashlib.sha256).hexdigest() if HOSTED else ""
+
+
 @app.middleware("http")
 async def require_session(request: Request, call_next):
     request.state.claims = None
-    if HOSTED and not request.url.path.startswith(OPEN_PATHS):
+    path = request.url.path
+    if HOSTED and path in WATCHDOG_PATHS and hmac.compare_digest(
+            request.headers.get("X-Magic-Watchdog", ""), WATCHDOG_TOKEN):
+        return await call_next(request)
+    if HOSTED and not path.startswith(OPEN_PATHS):
         claims = auth.verify(request.cookies.get(auth.COOKIE))
         if claims is None:
-            if request.url.path.startswith("/api/"):
+            if path.startswith("/api/"):
                 return JSONResponse({"detail": "signed out", "web_url": auth.WEB_URL}, status_code=401)
             return signed_out_page()
         request.state.claims = claims
+        # "Stop GPU now" would end every customer's stream: admins only (and the watchdog)
+        if path == "/api/gpu/stop" and claims.get("role") != "admin":
+            return JSONResponse({"detail": "Only an admin can stop the GPU."}, status_code=403)
     return await call_next(request)
 
 

@@ -1,0 +1,7 @@
+# Upload set for `gcloud builds submit .` (deploy/vast/image/build.sh). Unlike .gitignore, models/ IS included.
+.git
+.claude
+.venv
+**/__pycache__
+library
+settings.json

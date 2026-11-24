@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Privacy · {{ S.brand }}{% endblock %}
+{% block main %}
+<section class="page"><div class="wrap legal">
+  <p class="draft">Draft for review by a lawyer before launch, with the Digital Personal Data Protection Act, 2023 in mind: the operator's name, the grievance officer and retention periods still need to be filled in.</p>
+  <h1>Privacy policy</h1>
+
+  <h2>What we collect</h2>
+  <ul>
+    <li><b>Account:</b> your name, e-mail address and Google account id, from Google sign-in.</li>
+    <li><b>Hours and payments:</b> packs bought, amounts, payment ids and how long each session streamed. Card and bank details stay with Razorpay.</li>
+    <li><b>Faces:</b> the photos you upload to swap in, kept in a folder only your account can use.</li>
+    <li><b>Video:</b> your webcam picture is processed live and not recorded or stored by us.</li>
+  </ul>
+
+  <h2>Why</h2>
+  <p>To run the service for you, keep your balance correct, take payments, prevent misuse and meet legal duties. We don't sell your data and don't use your photos or video to train models.</p>
+
+  <h2>Who processes it</h2>
+  <p>Google (sign-in and hosting), Razorpay (payments) and the cloud providers that run the video servers, each only for that purpose.</p>
+
+  <h2>Your rights</h2>
+  <ul>
+    <li>See the data we hold about you, correct it, or ask us to delete it. Deletion removes your account, balance, history and photos; payment records are kept as long as tax law requires, without your e-mail.</li>
+    <li>Withdraw consent at any time by deleting your photos or your account.</li>
+    <li>{% if S.support_email %}Write to <a href="mailto:{{ S.support_email }}">{{ S.support_email }}</a>{% else %}Contact us through the address on this site{% endif %} for any of these. A grievance officer will be named here before launch.</li>
+  </ul>
+
+  <h2>Cookies</h2>
+  <p>One cookie keeps you signed in, and one is used for a few minutes during Google sign-in. No advertising or tracking cookies.</p>
+</div></section>
+{% endblock %}

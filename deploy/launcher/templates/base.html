@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en" data-type="software" data-radius="soft">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="page-type" content="software">
+<meta name="site-kind" content="software">
+<title>{% block title %}{{ S.brand }}: live face swap for streams and video calls{% endblock %}</title>
+<meta name="description" content="{% block description %}Swap your face live on streams and video calls. Hour packs, and time counts only while you stream.{% endblock %}">
+<meta property="og:title" content="{{ S.brand }}: live face swap for streams and video calls">
+<meta property="og:description" content="Swap your face live on streams and video calls. Time counts only while you stream.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="{{ S.site_url }}/">
+<meta name="theme-color" content="#0e0f11">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/site.css">
+{% block head %}{% endblock %}
+</head>
+<body class="{% block bodyclass %}{% endblock %}">
+<a class="skip" href="#main">Skip to content</a>
+<header class="nav" id="top">
+  <div class="wrap nav-row">
+    <a class="mark" href="/" aria-label="{{ S.brand }} home"><span class="mark-dot" aria-hidden="true"></span>{{ S.brand }}</a>
+    <nav class="nav-links" aria-label="Main">
+      {% block navlinks %}
+      <a href="/#how">How it works</a>
+      <a href="/#prices">Prices</a>
+      <a href="/#questions">Questions</a>
+      {% endblock %}
+    </nav>
+    <div class="nav-actions">
+      {% if user %}
+        {% if is_admin %}<a class="link-quiet" href="/admin">Admin</a>{% endif %}
+        <a class="btn primary" href="/app">Open your studio</a>
+      {% else %}
+        <a class="link-quiet" href="/login?next=/app">Sign in</a>
+        <a class="btn primary" href="/login?next=/app">Buy hours</a>
+      {% endif %}
+    </div>
+  </div>
+</header>
+<main id="main">
+{% block main %}{% endblock %}
+</main>
+<footer class="footer">
+  <div class="wrap footer-row">
+    <div>
+      <a class="mark" href="/"><span class="mark-dot" aria-hidden="true"></span>{{ S.brand }}</a>
+      <p class="muted small">Live face swap for streams and video calls. Every output carries an "AI face swap" label.</p>
+    </div>
+    <nav class="footer-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      {% if S.support_email %}<a href="mailto:{{ S.support_email }}">Contact</a>{% endif %}
+    </nav>
+  </div>
+</footer>
+{% block scripts %}{% endblock %}
+</body>
+</html>
