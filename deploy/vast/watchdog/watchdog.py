@@ -2,7 +2,7 @@
 """Node watchdog for a Magic Pro GPU instance (runs under supervisor next to `magicpro`).
 
 Stops this Vast.ai instance (GPU billing stops; storage is still billed) when:
-  * grace:     nobody has streamed for GRACE seconds (default 600). A user returning cancels it.
+  * grace:     nobody has streamed for GRACE seconds (default 300 = 5 min). A user returning cancels it.
   * dead-man:  nobody has streamed AND the launcher has not been in contact for DEADMAN seconds
                (default 900). This holds even with GRACE=0, so a bug anywhere else can never
                leave the GPU billing all night.
@@ -45,7 +45,7 @@ APP = env("MAGIC_APP_URL", "http://127.0.0.1:17860")
 PORTAL = env("MAGIC_PORTAL_URL", "http://localhost:11111")
 EXTERNAL_PORT = env("MAGIC_EXTERNAL_PORT", "10100")
 STATE_DIR = Path(env("MAGIC_GPU_STATE_DIR", "/tmp/magicpro-gpu"))
-GRACE = float(env("MAGIC_IDLE_GRACE", "600"))          # 0 = off (dead-man still applies)
+GRACE = float(env("MAGIC_IDLE_GRACE", "300"))          # 0 = off (dead-man still applies)
 DEADMAN = float(env("MAGIC_DEADMAN", "900"))
 HOLD_MAX = float(env("MAGIC_HOLD_MAX", str(4 * 3600)))
 POLL = float(env("MAGIC_WATCHDOG_POLL", "5"))

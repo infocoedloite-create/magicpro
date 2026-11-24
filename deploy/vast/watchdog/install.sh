@@ -14,7 +14,7 @@ ENV_FILE=/etc/magicpro-watchdog.env
 w() { if [ -n "${!1:-}" ]; then echo "$1=${!1}"; else echo "$1=\${$1:-$2}"; fi; }
 {
   w MAGIC_WATCHDOG_DRY_RUN 1
-  w MAGIC_IDLE_GRACE 600
+  w MAGIC_IDLE_GRACE 300
   w MAGIC_DEADMAN 900
   w MAGIC_APP_URL http://127.0.0.1:17860
   w MAGIC_LAUNCHER_URL ""

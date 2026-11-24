@@ -85,7 +85,7 @@ A Vast.ai GPU bills every second it runs, used or not. Three pieces keep the bil
   reads how many people stream on that node from the app (`/api/gpu/status`). A person counts
   while their stream is connected **and** their page sent a heartbeat in the last 15 s (pages send
   one every 5 s), so closed or crashed tabs and dropped Wi-Fi stop counting. With nobody streaming
-  for the grace period (`MAGIC_IDLE_GRACE`, 600 s) the node stops itself; anyone streaming before
+  for the grace period (`MAGIC_IDLE_GRACE`, 300 s = 5 min) the node stops itself; anyone streaming before
   then cancels it. Dead-man rule: no streams and no launcher contact for `MAGIC_DEADMAN` (900 s)
   stops it too. It uses the instance-scoped `CONTAINER_API_KEY` Vast puts in every container.
   **Stop GPU now** in the app page stops that node (refused while others stream, unless confirmed).
