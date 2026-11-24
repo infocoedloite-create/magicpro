@@ -13,16 +13,22 @@ from .blending import box_mask, paste_back
 from .onnx_utils import create_session, input_dtype
 
 
+# Enhancers verified correct under TensorRT FP16 (output compared with full precision).
+# GFPGAN is NOT: in FP16 its StyleGAN layers overflow and it outputs a flat brown square.
+TRT_FP16_OK = ("gpen",)
+
+
 class FaceEnhancer:
     def __init__(self, path):
         self.path = Path(path)
         self.name = self.path.stem
+        use_trt = self.name.lower().startswith(TRT_FP16_OK)
         batched = self.path.parent.parent / "batched" / self.path.name
         if batched.exists():
-            self.session = create_session(batched, trt_shapes={
+            self.session = create_session(batched, use_trt=use_trt, trt_shapes={
                 "input": ((1, 3, 512, 512), (8, 3, 512, 512), (16, 3, 512, 512))})
         else:
-            self.session = create_session(self.path)
+            self.session = create_session(self.path, use_trt=use_trt)
         ins = self.session.get_inputs()
         self.img_in = next(i for i in ins if len(i.shape) == 4)
         self.extra = [i for i in ins if i is not self.img_in]  # CodeFormer fidelity weight

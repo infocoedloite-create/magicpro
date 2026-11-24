@@ -53,14 +53,14 @@ def tensorrt_available():
     return _trt_ok and "TensorrtExecutionProvider" in ort.get_available_providers()
 
 
-def providers(trt_profile=None, use_trt=True):
+def providers(trt_profile=None, use_trt=True, fp16=True):
     _preload()
     out = []
     if use_trt and tensorrt_available():
         config.TRT_CACHE.mkdir(parents=True, exist_ok=True)
         opts = {
             "device_id": config.GPU_ID,
-            "trt_fp16_enable": True,
+            "trt_fp16_enable": fp16,
             "trt_engine_cache_enable": True,
             "trt_engine_cache_path": str(config.TRT_CACHE),
             "trt_timing_cache_enable": True,
@@ -85,7 +85,9 @@ def trt_profile(shapes):
     return {"trt_profile_min_shapes": fmt(0), "trt_profile_opt_shapes": fmt(1), "trt_profile_max_shapes": fmt(2)}
 
 
-def create_session(path, trt_shapes=None, use_trt=True):
+def create_session(path, trt_shapes=None, use_trt=True, fp16=True):
+    """fp16=False keeps TensorRT in FP32: required for InSwapper, whose identity (style) layers
+    lose the source identity in FP16 (measured: similarity to source 0.06 instead of 0.63)."""
     so = ort.SessionOptions()
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     so.log_severity_level = 3
@@ -95,7 +97,7 @@ def create_session(path, trt_shapes=None, use_trt=True):
     so.inter_op_num_threads = 1
     so.add_session_config_entry("session.intra_op.allow_spinning", "0")
     prof = trt_profile(trt_shapes) if trt_shapes else None
-    return ort.InferenceSession(str(path), sess_options=so, providers=providers(prof, use_trt))
+    return ort.InferenceSession(str(path), sess_options=so, providers=providers(prof, use_trt, fp16))
 
 
 def input_dtype(node):

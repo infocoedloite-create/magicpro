@@ -61,7 +61,9 @@ class FaceSwapper:
             for i in g.input:
                 d = [x.dim_value for x in i.type.tensor_type.shape.dim][1:]
                 shapes[i.name] = ((1, *d), (16, *d), (32, *d))
-        self.session = create_session(model, trt_shapes=shapes)
+        # No TensorRT: in FP16 it destroys InSwapper's identity transfer (similarity to the source
+        # 0.06 instead of 0.63, the face stays the original), and in FP32 it is slower than CUDA.
+        self.session = create_session(model, trt_shapes=shapes, use_trt=bool(opts.get("tensorrt", False)))
         ins = self.session.get_inputs()
         self.batchable = not isinstance(ins[0].shape[0], int)
         tgt = [i for i in ins if len(i.shape) == 4]
