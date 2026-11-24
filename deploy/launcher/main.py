@@ -73,7 +73,7 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
     S = settings or Settings()
     db = store or make_store()
     if pool is None:
-        pool = poolmod.Pool(poolmod.Vast(os.environ.get("VAST_API_KEY", ""), os.environ.get("VAST_URL", "https://console.vast.ai")))
+        pool = poolmod.Pool(poolmod.Vast(os.environ.get("VAST_API_KEY", "").strip(), os.environ.get("VAST_URL", "https://console.vast.ai")))
     pool.cfg.launcher_url = pool.cfg.launcher_url or S.site_url
     pool.cfg.session_secret = pool.cfg.session_secret or S.session_secret
     pool.cost_cb = lambda usd, secs: db.add_gpu_cost(usd, secs)

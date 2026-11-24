@@ -77,9 +77,9 @@ class Vast:
     def __init__(self, api_key: str, url: str = "https://console.vast.ai"):
         self.key, self.url = api_key, url.rstrip("/")
 
-    async def _req(self, method, path, json_body=None):
+    async def _req(self, method, path, json_body=None, version="v0"):
         async with httpx.AsyncClient(timeout=25) as c:
-            r = await c.request(method, f"{self.url}/api/v0{path}", json=json_body,
+            r = await c.request(method, f"{self.url}/api/{version}{path}", json=json_body,
                                 headers={"Authorization": f"Bearer {self.key}"})
         try:
             body = r.json()
@@ -91,7 +91,8 @@ class Vast:
         return body
 
     async def instances(self) -> list:
-        return (await self._req("GET", "/instances/?owner=me")).get("instances", [])
+        # v0 listing answers 410 deprecated (Nov 2026); v1 is paged, one page covers the pool (max 5 nodes)
+        return (await self._req("GET", "/instances/", version="v1")).get("instances", [])
 
     async def set_state(self, iid, state) -> dict:
         return await self._req("PUT", f"/instances/{iid}/", {"state": state})
