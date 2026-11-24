@@ -89,6 +89,11 @@ def create_session(path, trt_shapes=None, use_trt=True):
     so = ort.SessionOptions()
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     so.log_severity_level = 3
+    # the GPU does the work; idle CPU worker threads spinning in every session only steal cores
+    # from the streams' own threads
+    so.intra_op_num_threads = 1
+    so.inter_op_num_threads = 1
+    so.add_session_config_entry("session.intra_op.allow_spinning", "0")
     prof = trt_profile(trt_shapes) if trt_shapes else None
     return ort.InferenceSession(str(path), sess_options=so, providers=providers(prof, use_trt))
 

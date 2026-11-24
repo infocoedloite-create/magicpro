@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import codec, config
+from . import batcher, codec, config
 from .blending import draw_label, swap_mask
 from .enhancer import FaceEnhancer
 from .face import FaceDetector, FaceRecognizer, KpsSmoother
@@ -111,6 +111,9 @@ def resolve_swapper(name):
     return name, 1, 0.0
 
 
+FULL_DETECT_EVERY = 5      # full-frame detection every N frames; in between, only around the last face
+
+
 class TrackState:
     """Per-stream face tracking (smoothing + hold frames). Never shared between users."""
 
@@ -118,6 +121,30 @@ class TrackState:
         self.smoother = KpsSmoother()
         self.last_faces = []
         self.miss = 0
+        self.since_full = FULL_DETECT_EVERY
+
+
+def detect_tracked(detector, frame, s, track):
+    """Full-frame detection every FULL_DETECT_EVERY frames (and whenever the face is lost);
+    otherwise detect at 320 px inside a box around the previous face, which costs a fraction of
+    the GPU and CPU time and keeps the landmarks just as precise."""
+    if not s.many_faces and track.last_faces and track.miss == 0 and track.since_full < FULL_DETECT_EVERY:
+        f = track.last_faces[0]
+        h, w = frame.shape[:2]
+        cx, cy = (f.bbox[0] + f.bbox[2]) / 2, (f.bbox[1] + f.bbox[3]) / 2
+        half = f.size * 1.1
+        x0, y0 = int(max(cx - half, 0)), int(max(cy - half, 0))
+        x1, y1 = int(min(cx + half, w)), int(min(cy + half, h))
+        if x1 - x0 > 32 and y1 - y0 > 32:
+            faces = detector.detect(frame[y0:y1, x0:x1], 320, s.det_thresh, max_faces=1)
+            if faces:
+                for g in faces:
+                    g.bbox += (x0, y0, x0, y0)
+                    g.kps += (x0, y0)
+                track.since_full += 1
+                return faces
+    track.since_full = 0
+    return detector.detect(frame, s.det_size, s.det_thresh, max_faces=0 if s.many_faces else 1)
 
 
 class Engine:
@@ -144,6 +171,7 @@ class Engine:
         self.browser_clients = 0
         self._vcam = None
         self._camera_track = TrackState()       # the server-camera stream's own tracking state
+        batcher.active_streams = self.active_streams
         self.stats = {"fps": 0.0, "latency_ms": 0.0, "detect_ms": 0.0, "swap_ms": 0.0,
                       "enhance_ms": 0.0, "faces": 0, "camera": "", "output": "",
                       "swap_provider": "", "status": "idle", "error": "", "vcam": "off", "encoder": ""}
@@ -157,7 +185,8 @@ class Engine:
         while True:
             try:
                 tmp = path.with_suffix(".tmp")
-                tmp.write_text(json.dumps({**self.stats, "pid": os.getpid(), "t": time.time(),
+                tmp.write_text(json.dumps({**self.stats, "batch": batcher.mean_batch_sizes(),
+                                           "pid": os.getpid(), "t": time.time(),
                                            "browser_clients": self.browser_clients, "running": self.running}))
                 os.replace(tmp, path)
             except OSError:
@@ -448,7 +477,7 @@ class Engine:
         self.stats["swap_provider"] = swapper.provider
 
         t0 = time.perf_counter()
-        faces = self.detector.detect(frame, s.det_size, s.det_thresh, max_faces=0 if s.many_faces else 1)
+        faces = detect_tracked(self.detector, frame, s, track)
         if faces:
             track.last_faces, track.miss = faces, 0
         elif track.last_faces and track.miss < s.hold_frames:

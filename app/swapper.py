@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from .align import estimate_affine, template, warp_face
+from .batcher import Batcher
 from .blending import color_match, paste_back
 from .onnx_utils import create_session, input_dtype
 
@@ -78,7 +79,24 @@ class FaceSwapper:
         self.signed = opts.get("normalize", "0_1") == "-1_1"
         self.emap = load_emap(self.path) if opts.get("use_emap", True) else None
         self.provider = self.session.get_providers()[0]
+        # one dispatcher runs the GPU calls of every stream in this process, batched
+        self._batcher = Batcher(self._run_rows, max_items=32, name=f"batch-{self.name}") if self.batchable else None
         self._warmup()
+
+    def _run_rows(self, items):
+        """items: [(blob (n,3,s,s), latents (n,512))] from several streams -> list of outputs."""
+        blob = np.concatenate([b for b, _ in items])
+        lat = np.concatenate([lt for _, lt in items])
+        outs = []
+        for i in range(0, len(blob), 32):          # TensorRT profile max batch
+            outs.append(self.session.run([self.out_name], {self.t_in.name: blob[i:i + 32],
+                                                           self.s_in.name: lat[i:i + 32]})[0])
+        pred = np.concatenate(outs)
+        res, k = [], 0
+        for b, _ in items:
+            res.append(pred[k:k + len(b)])
+            k += len(b)
+        return res
 
     def _warmup(self):
         blank = np.zeros((self.size, self.size, 3), np.uint8)
@@ -102,11 +120,13 @@ class FaceSwapper:
             blob = cv2.dnn.blobFromImages(crops, 1 / 127.5, (self.size, self.size), (127.5, 127.5, 127.5), swapRB=True)
         else:
             blob = cv2.dnn.blobFromImages(crops, 1 / 255.0, (self.size, self.size), (0, 0, 0), swapRB=True)
-        lat = np.repeat(latent.reshape(1, -1), len(crops), axis=0)
-        pred = self.session.run([self.out_name], {
-            self.t_in.name: blob.astype(self.t_dtype, copy=False),
-            self.s_in.name: lat.astype(self.s_dtype, copy=False),
-        })[0].astype(np.float32).transpose(0, 2, 3, 1)
+        lat = np.repeat(latent.reshape(1, -1), len(crops), axis=0).astype(self.s_dtype, copy=False)
+        blob = blob.astype(self.t_dtype, copy=False)
+        if self._batcher is not None:
+            pred = self._batcher((blob, lat))
+        else:
+            pred = self.session.run([self.out_name], {self.t_in.name: blob, self.s_in.name: lat})[0]
+        pred = pred.astype(np.float32).transpose(0, 2, 3, 1)
         if self.signed:
             pred = (pred + 1.0) * 0.5
         pred = np.clip(pred, 0, 1)[..., ::-1] * 255.0

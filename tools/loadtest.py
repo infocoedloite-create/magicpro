@@ -138,7 +138,7 @@ def main():
         stats = api(a.base, "/api/stats")
         print(f"{n:3d} streams: fps per stream min {min(fps):5.1f} / median {statistics.median(fps):5.1f} of {a.fps}"
               f" | delay p50 {p50:4.0f} ms p95 {p95:4.0f} ms | server: detect {stats['detect_ms']} swap {stats['swap_ms']}"
-              f" enhance {stats['enhance_ms']} ms", flush=True)
+              f" enhance {stats['enhance_ms']} ms | mean batch {stats.get('batch', {})}", flush=True)
 
 
 if __name__ == "__main__":
