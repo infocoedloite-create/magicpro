@@ -7,7 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config
+from . import config, gpucontrol
 from .pipeline import Engine, TrackState, list_models, list_swappers
 
 engine = Engine()
@@ -20,6 +20,7 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="Magic Pro Live Face Swap", lifespan=lifespan)
+gpucontrol.attach(app, engine)   # GPU on/off: heartbeats, status, Stop GPU now
 app.mount("/static", StaticFiles(directory=config.STATIC), name="static")
 app.mount("/library-files", StaticFiles(directory=config.LIBRARY), name="library")
 

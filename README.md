@@ -77,6 +77,79 @@ Then browse to <http://localhost:7860>, leave **Webcam input** on "This browser'
 press **Start camera**. Your webcam streams to the GPU and the swapped video comes back. Round
 trip is shown on screen. For OBS, full-screen the output and use Window Capture.
 
+## GPU on only while someone streams (auto on/off)
+
+A Vast.ai GPU bills every second it runs, used or not. Two pieces keep it off when nobody streams:
+
+* **Watchdog** on the instance (`deploy/vast/watchdog/`), a supervisor service next to `magicpro`.
+  It reads how many people are streaming from the app (`/api/gpu/status`). A person counts while
+  their stream is connected **and** their page sent a heartbeat in the last 15 s (pages send one
+  every 5 s), so closed or crashed tabs and dropped Wi-Fi stop counting. When the count is 0 for
+  the grace period (`MAGIC_IDLE_GRACE`, default 600 s) it stops the instance; anyone streaming again
+  before then cancels it. Dead-man rule: no streams and no launcher contact for `MAGIC_DEADMAN`
+  (900 s) stops it as well, even with the grace turned off (`MAGIC_IDLE_GRACE=0`). It stops the
+  instance with the instance-scoped `CONTAINER_API_KEY` that Vast puts in every container, so it
+  needs no key from you. **Stop GPU now** in the page asks the watchdog to stop at once (refused
+  while someone else streams, unless you confirm).
+* **Launcher** (`deploy/launcher/`), a small always-on page on Google Cloud Run, so there is
+  something to open while the GPU is off. Sign in, press **Start camera**: it starts the instance,
+  shows "Starting GPU…", waits until the app answers, then opens the app's current HTTPS address
+  (the Cloudflare quick tunnel changes on every restart) and starts the camera. If the stopped GPU
+  was rented by someone else, it says so and offers **Cancel start**. Cloud Run costs nothing
+  noticeable at this traffic (it scales to zero).
+
+Stopping keeps the disk (storage is still billed, about $0.20/h here). Restarting takes 1–2 min.
+
+### 1. Watchdog (on the instance)
+
+```bash
+bash /workspace/magicpro/deploy/vast/watchdog/install.sh                       # test mode: only logs "would stop"
+MAGIC_WATCHDOG_DRY_RUN=0 bash /workspace/magicpro/deploy/vast/watchdog/install.sh   # really stop the GPU
+tail -f /var/log/portal/magicpro-watchdog.log
+```
+
+Settings live in `/etc/magicpro-watchdog.env` (`supervisorctl restart magicpro-watchdog` after an
+edit). To keep the GPU on while you work over SSH with nobody streaming (benchmarks, updates):
+`mkdir -p /tmp/magicpro-gpu && touch /tmp/magicpro-gpu/hold` keeps it on for 4 h from the touch;
+`rm /tmp/magicpro-gpu/hold` releases it. Rule tests: `python3 deploy/vast/watchdog/test_watchdog.py`.
+
+### 2. Launcher (Google Cloud Run)
+
+1. **Vast.ai API key:** cloud.vast.ai → Account → API Keys → create a key (limit it to instance
+   read/write if the form offers permissions). Don't paste it into chat or a terminal.
+2. **Secret Manager** (console.cloud.google.com → Security → Secret Manager, project `magicprov2`):
+   create secret `vast-api-key` with that key as its value, and secret `launcher-password` with
+   the password people will use to sign in to the launcher.
+3. **Deploy** (Cloud Shell or a PC with `gcloud`), from the project folder:
+
+```bash
+PROJECT=magicprov2; REGION=asia-south1       # any region works; the launcher carries no video
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com --project $PROJECT
+gcloud iam service-accounts create magicpro-launcher --project $PROJECT
+for s in vast-api-key launcher-password; do
+  gcloud secrets add-iam-policy-binding $s --project $PROJECT \
+    --member serviceAccount:magicpro-launcher@$PROJECT.iam.gserviceaccount.com --role roles/secretmanager.secretAccessor
+done
+gcloud run deploy magicpro-launcher --source deploy/launcher --project $PROJECT --region $REGION \
+  --service-account magicpro-launcher@$PROJECT.iam.gserviceaccount.com \
+  --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 256Mi \
+  --set-env-vars VAST_INSTANCE_ID=62324193 \
+  --set-secrets VAST_API_KEY=vast-api-key:latest,LAUNCHER_PASSWORD=launcher-password:latest
+```
+
+The command prints the launcher's `https://…run.app` address; bookmark it. `--allow-unauthenticated`
+only lets the sign-in page load; everything else needs the password (a signed cookie, 14 days,
+10 wrong tries per 10 min per address). Keep `--max-instances 1`: start/rented-GPU timing is kept
+in memory. Change the password by adding a new version of `launcher-password` and redeploying.
+
+How the launcher reaches the instance: the Vast API gives it the instance's public address, the
+mapped port of container port 10100 (the app behind Caddy token auth) and that token. It asks the
+app for its quick-tunnel URL (`/api/gpu/tunnel`) and sends the browser to
+`<tunnel>/?token=…&autostart=1`; Caddy turns the token into a cookie and the page removes it from
+the address bar. For a fixed address instead of the changing quick tunnel, create a named
+Cloudflare tunnel and launch the instance with `CF_TUNNEL_TOKEN` (it then bypasses Caddy, so put
+Cloudflare Access in front of it).
+
 ## Quality and latency notes
 
 - **Lip sync.** Every frame is swapped from your live face, so the mouth follows your speech

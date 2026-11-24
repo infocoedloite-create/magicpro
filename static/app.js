@@ -468,3 +468,39 @@ setInterval(async () => {
 bindControls();
 bindUpload();
 load().then(switchSource).catch((e) => showError(e.message));
+
+/* ---------------- GPU on/off (deploy/vast/watchdog + deploy/launcher) ----------------
+   Every 5 s the page tells the server whether it is streaming; the server counts a user only
+   while their socket is open AND heartbeats are fresh (15 s). The watchdog stops the GPU after
+   the grace period with nobody streaming. ?autostart=1 (set by the launcher) starts the camera. */
+const gpuCid = sessionStorage.gpuCid || (sessionStorage.gpuCid = Math.random().toString(36).slice(2) + Date.now().toString(36));
+async function gpuBeat() {
+  try {
+    const s = await post("/api/gpu/heartbeat", { cid: gpuCid, streaming: isRunning(state) });
+    const w = s.watchdog || {};
+    const fresh = w.updated && Date.now() / 1000 - w.updated < 30;
+    $("#gpu-stop").hidden = !fresh;
+    const note = $("#gpu-note");
+    note.hidden = !(fresh && w.stop_in_s != null);
+    if (!note.hidden) note.textContent = `GPU stops in ${Math.ceil(w.stop_in_s / 60)} min unless someone streams${w.dry_run ? " (test mode)" : ""}`;
+  } catch { /* older server or restarting */ }
+}
+setInterval(gpuBeat, 5000);
+gpuBeat();
+$("#gpu-stop").addEventListener("click", async () => {
+  if (!confirm("Stop the GPU now? Streaming ends for this page, and starting again takes 1–2 minutes.")) return;
+  if (isRunning(state)) { await stop().catch(() => {}); renderRunning(state); }
+  await gpuBeat();
+  try {
+    const r = await post("/api/gpu/stop", { cid: gpuCid });
+    showError(r.message);
+  } catch (e) {
+    if (!confirm(`${e.message} Stop the GPU for everyone anyway?`)) return;
+    try { showError((await post("/api/gpu/stop", { cid: gpuCid, force: true })).message); } catch (e2) { showError(e2.message); }
+  }
+});
+if (new URLSearchParams(location.search).has("autostart")) {
+  history.replaceState(null, "", location.pathname);
+  const go = () => (state ? $("#toggle").click() : setTimeout(go, 300));
+  setTimeout(go, 300);
+}
