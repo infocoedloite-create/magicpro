@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field, fields
 import cv2
 import numpy as np
 
-from . import config
+from . import codec, config
 from .blending import draw_label, swap_mask
 from .enhancer import FaceEnhancer
 from .face import FaceDetector, FaceRecognizer, KpsSmoother
@@ -30,6 +30,8 @@ RESTART_KEYS = {"camera", "camera_backend", "resolution", "fps"}
 @dataclass
 class Settings:
     # capture / output
+    input_source: str = "browser"      # browser (webcam streamed from the page) | server (camera on this machine)
+    stream_quality: int = 85           # JPEG quality of frames sent back to the browser
     camera: int = 0
     camera_backend: str = "dshow"      # dshow | msmf | any
     resolution: str = "1080p"
@@ -93,7 +95,10 @@ class Engine:
         self._in_cond = threading.Condition()
         self._in_frame, self._in_time, self._in_seq = None, 0.0, 0
         self._out_cond = threading.Condition()
-        self._out_frame, self._out_seq = None, 0
+        self._out_frame, self._out_seq, self._out_time = None, 0, 0.0
+        self._proc_lock = threading.Lock()      # one GPU pipeline, shared by server camera and browser streams
+        self._fps_t, self._fps_n = time.perf_counter(), 0
+        self.browser_clients = 0
         self._vcam = None
         self._smoother = KpsSmoother()
         self._last_faces, self._miss = [], 0
@@ -270,14 +275,8 @@ class Engine:
             cap.release()
 
     # ---------- processing ----------
-    def _process_loop(self):
-        seen, fps_t, fps_n = 0, time.perf_counter(), 0
-        while not self._stop.is_set():
-            with self._in_cond:
-                self._in_cond.wait_for(lambda: self._in_seq != seen or self._stop.is_set(), timeout=0.5)
-                if self._stop.is_set() or self._in_seq == seen:
-                    continue
-                frame, t_in, seen = self._in_frame, self._in_time, self._in_seq
+    def _safe_process(self, frame):
+        with self._proc_lock:
             try:
                 out = self._process(frame)
                 self.stats.update(status="live", error="")
@@ -285,13 +284,36 @@ class Engine:
                 traceback.print_exc()
                 self.stats.update(status="error", error=str(e))
                 out = frame
+        self._fps_n += 1
+        now = time.perf_counter()
+        if now - self._fps_t >= 1.0:
+            self.stats["fps"] = round(self._fps_n / (now - self._fps_t), 1)
+            self._fps_t, self._fps_n = now, 0
+        return out
+
+    def _process_loop(self):
+        seen = 0
+        while not self._stop.is_set():
+            with self._in_cond:
+                self._in_cond.wait_for(lambda: self._in_seq != seen or self._stop.is_set(), timeout=0.5)
+                if self._stop.is_set() or self._in_seq == seen:
+                    continue
+                frame, t_in, seen = self._in_frame, self._in_time, self._in_seq
+            out = self._safe_process(frame)
             self._emit(out)
             self.stats["latency_ms"] = round((time.perf_counter() - t_in) * 1000, 1)
-            fps_n += 1
-            now = time.perf_counter()
-            if now - fps_t >= 1.0:
-                self.stats["fps"] = round(fps_n / (now - fps_t), 1)
-                fps_t, fps_n = now, 0
+
+    def process_jpeg(self, data: bytes):
+        """Browser mode: JPEG in -> swapped JPEG out. Returns None for an unreadable frame."""
+        t = time.perf_counter()
+        frame = codec.decode(data)
+        if frame is None:
+            return None
+        out = self._safe_process(frame)
+        self._publish(out)
+        jpg = codec.encode(out, self.s.stream_quality)
+        self.stats["latency_ms"] = round((time.perf_counter() - t) * 1000, 1)
+        return jpg
 
     def _process(self, frame):
         s = self.s
@@ -365,8 +387,11 @@ class Engine:
                 self.s.virtual_cam = False
         elif self._vcam is not None:
             self._close_vcam()
+        self._publish(frame)
+
+    def _publish(self, frame):
         with self._out_cond:
-            self._out_frame = frame
+            self._out_frame, self._out_time = frame, time.perf_counter()
             self._out_seq += 1
             self._out_cond.notify_all()
 
@@ -378,13 +403,13 @@ class Engine:
         return img
 
     def jpeg(self, full=False):
-        frame = self._out_frame if self.running and self._out_frame is not None else self._idle_frame()
+        fresh = self._out_frame is not None and time.perf_counter() - self._out_time < 2.0
+        frame = self._out_frame if fresh else self._idle_frame()
         pw = self.s.preview_width
         if not full and frame.shape[1] > pw:
             frame = cv2.resize(frame, (pw, int(frame.shape[0] * pw / frame.shape[1])),
                                interpolation=cv2.INTER_AREA)
-        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 92 if full else self.s.preview_quality])
-        return buf.tobytes()
+        return codec.encode(frame, 92 if full else self.s.preview_quality)
 
     def mjpeg(self, full=False):
         seen = -1

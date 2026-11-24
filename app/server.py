@@ -1,7 +1,8 @@
 """FastAPI control server: settings API, face library, MJPEG preview."""
+import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -47,7 +48,7 @@ def state():
 
 @app.get("/api/stats")
 def stats():
-    return {"running": engine.running, **engine.stats}
+    return {"running": engine.running, "browser_clients": engine.browser_clients, **engine.stats}
 
 
 @app.post("/api/settings")
@@ -97,6 +98,43 @@ def delete(item_id: str):
     if item_id in engine.s.source_ids:
         engine.update({"source_ids": [i for i in engine.s.source_ids if i != item_id]})
     return {"ok": True}
+
+
+@app.websocket("/ws/stream")
+async def stream(ws: WebSocket):
+    """Browser webcam mode. Client frame = 4-byte id + 4 reserved bytes + JPEG.
+    Reply = the same 4-byte id + swapped JPEG. Only the newest frame is processed, so a slow
+    link drops frames instead of building up delay; the client keeps a few frames in flight."""
+    await ws.accept()
+    engine.browser_clients += 1
+    slot = {"data": None}
+    ready = asyncio.Event()
+
+    async def receive():
+        while True:
+            slot["data"] = await ws.receive_bytes()
+            ready.set()
+
+    async def work():
+        while True:
+            await ready.wait()
+            ready.clear()
+            data, slot["data"] = slot["data"], None
+            if not data or len(data) < 9:
+                continue
+            out = await run_in_threadpool(engine.process_jpeg, data[8:])
+            if out is not None:
+                await ws.send_bytes(data[:4] + out)
+
+    tasks = [asyncio.create_task(receive()), asyncio.create_task(work())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    finally:
+        for t in tasks:
+            t.cancel()
+        engine.browser_clients -= 1
+        if engine.browser_clients == 0 and not engine.running:
+            engine.stats.update(status="idle", fps=0.0)
 
 
 @app.get("/video.mjpg")

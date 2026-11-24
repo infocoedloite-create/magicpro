@@ -1,9 +1,10 @@
 numpy>=1.26,<3
-opencv-python>=4.9
+opencv-python-headless>=4.9
+simplejpeg>=1.7
 onnx>=1.16
 # GPU runtime + CUDA 12 / cuDNN 9 DLLs from pip (RTX PRO 6000 Blackwell needs CUDA 12.8+ builds: ORT >= 1.22)
 onnxruntime-gpu[cuda,cudnn]>=1.22
 fastapi>=0.110
-uvicorn>=0.29
+uvicorn[standard]>=0.29
 python-multipart>=0.0.9
-pyvirtualcam>=0.12
+pyvirtualcam>=0.12; sys_platform == "win32"

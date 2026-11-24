@@ -58,7 +58,11 @@ code { font-family: var(--mono); font-size: .92em; background: var(--surface-2);
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: var(--edge); padding: var(--edge); align-items: start; }
 .stage { position: sticky; top: 89px; }
 .screen { position: relative; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
-.screen img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.screen img, .screen canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+.screen [hidden] { display: none; }
+body[data-source="browser"] .server-only, body[data-source="server"] .browser-only { display: none; }
+.browser-only { display: flex; flex-direction: column; gap: 14px; }
+p.hint { margin: 0; }
 .screen .fs { position: absolute; right: 12px; top: 12px; background: rgba(0, 0, 0, .55); border-color: transparent; }
 .screen:fullscreen { border: 0; border-radius: 0; }
 

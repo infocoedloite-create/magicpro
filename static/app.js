@@ -8,6 +8,7 @@ async function api(path, opts = {}) {
   return body;
 }
 const post = (path, data) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data ?? {}) });
+const source = () => state?.settings.input_source || "browser";
 
 function fmt(el) {
   const v = parseFloat(el.value);
@@ -31,8 +32,103 @@ function applySettings(s) {
     const out = el.closest(".range")?.querySelector("output");
     if (out) out.textContent = fmt(el);
   });
+  document.body.dataset.source = s.input_source;
 }
 
+/* ---------------- browser webcam -> GPU -> browser ---------------- */
+const MAX_IN_FLIGHT = 3;
+const bs = { running: false, stream: null, ws: null, sendId: 0, recvId: 0, sent: new Map(), rtt: 0, busy: false, cap: null, capCtx: null, outCtx: null, timer: null };
+
+async function listBrowserCams() {
+  const sel = $("#sel-bcam");
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  sel.innerHTML = "";
+  devs.forEach((d, i) => sel.add(new Option(d.label || `Webcam ${i + 1}`, d.deviceId)));
+  if (!devs.length) sel.add(new Option("Allow camera access to list webcams", ""));
+  if (localStorage.bcam && devs.some((d) => d.deviceId === localStorage.bcam)) sel.value = localStorage.bcam;
+}
+
+async function startBrowser() {
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    throw new Error("The browser only allows the webcam on https:// or localhost. Open this page through the SSH tunnel or the https link.");
+  }
+  const [w, h] = state.settings.resolution === "1080p" ? [1920, 1080] : [1280, 720];
+  const video = $("#cam");
+  bs.stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { deviceId: localStorage.bcam ? { ideal: localStorage.bcam } : undefined, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: state.settings.fps } },
+  });
+  video.srcObject = bs.stream;
+  await video.play();
+  listBrowserCams();
+
+  bs.cap = Object.assign(document.createElement("canvas"), { width: w, height: h });
+  bs.capCtx = bs.cap.getContext("2d");
+  const out = $("#out");
+  out.width = w; out.height = h;
+  bs.outCtx = out.getContext("2d");
+  bs.sendId = bs.recvId = 0; bs.sent.clear();
+
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/stream`);
+  ws.binaryType = "arraybuffer";
+  bs.ws = ws;
+  ws.onmessage = async (e) => {
+    const id = new DataView(e.data).getUint32(0, true);
+    const t = bs.sent.get(id);
+    if (t) bs.rtt = performance.now() - t;
+    for (const k of bs.sent.keys()) if (k <= id) bs.sent.delete(k);
+    bs.recvId = Math.max(bs.recvId, id);
+    const bmp = await createImageBitmap(new Blob([new Uint8Array(e.data, 4)], { type: "image/jpeg" }));
+    bs.outCtx.drawImage(bmp, 0, 0, bs.cap.width, bs.cap.height);
+    bmp.close();
+    pump();
+  };
+  ws.onclose = () => { if (bs.running) { stopBrowser(); showError("The connection to the GPU server closed. Press Start camera to reconnect."); } };
+  await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = () => fail(new Error("Could not connect to the GPU server.")); });
+
+  bs.running = true;
+  if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
+    const onFrame = () => { if (!bs.running) return; pump(); video.requestVideoFrameCallback(onFrame); };
+    video.requestVideoFrameCallback(onFrame);
+  } else {
+    bs.timer = setInterval(pump, 1000 / state.settings.fps);
+  }
+}
+
+async function pump() {
+  const ws = bs.ws;
+  if (!bs.running || bs.busy || !ws || ws.readyState !== 1 || ws.bufferedAmount > 4e6) return;
+  if (bs.sendId - bs.recvId >= MAX_IN_FLIGHT) {
+    const oldest = bs.sent.values().next().value;
+    if (!oldest || performance.now() - oldest < 1500) return;
+    bs.recvId = bs.sendId; bs.sent.clear();   // a reply went missing: don't stall
+  }
+  bs.busy = true;
+  try {
+    bs.capCtx.drawImage($("#cam"), 0, 0, bs.cap.width, bs.cap.height);
+    const blob = await new Promise((r) => bs.cap.toBlob(r, "image/jpeg", parseInt($("#send-q").value, 10) / 100));
+    if (!blob || !bs.running) return;
+    const id = ++bs.sendId;
+    const head = new ArrayBuffer(8);
+    new DataView(head).setUint32(0, id, true);
+    bs.sent.set(id, performance.now());
+    ws.send(new Blob([head, blob]));
+  } finally {
+    bs.busy = false;
+  }
+}
+
+function stopBrowser() {
+  bs.running = false;
+  clearInterval(bs.timer);
+  bs.ws?.close();
+  bs.ws = null;
+  bs.stream?.getTracks().forEach((t) => t.stop());
+  bs.stream = null;
+  bs.rtt = 0;
+}
+
+/* ---------------- library ---------------- */
 function renderLibrary() {
   const grid = $("#library");
   grid.innerHTML = "";
@@ -74,13 +170,21 @@ function bindControls() {
     let t;
     const send = () => {
       const v = el.type === "checkbox" ? el.checked : el.type === "range" ? parseFloat(el.value) : el.value;
-      setSetting(el.dataset.key, v).catch((e) => showError(e.message));
+      setSetting(el.dataset.key, v).then(() => { if (el.dataset.key === "input_source") switchSource(); }).catch((e) => showError(e.message));
     };
     el.addEventListener("input", () => {
       if (out) out.textContent = fmt(el);
       if (el.type === "range") { clearTimeout(t); t = setTimeout(send, 60); }
     });
     if (el.type !== "range") el.addEventListener("change", send);
+  });
+  const sq = $("#send-q");
+  sq.value = localStorage.sendQ || 80;
+  sq.closest(".range").querySelector("output").textContent = sq.value;
+  sq.addEventListener("input", () => { localStorage.sendQ = sq.value; sq.closest(".range").querySelector("output").textContent = sq.value; });
+  $("#sel-bcam").addEventListener("change", async (e) => {
+    localStorage.bcam = e.target.value;
+    if (bs.running) { stopBrowser(); await start(); }
   });
 }
 
@@ -90,28 +194,42 @@ function showError(msg) {
   e.textContent = msg || "";
 }
 
-function renderRunning(running, stats) {
+function isRunning(s) { return source() === "browser" ? bs.running : !!s?.running; }
+
+function renderRunning(stats) {
+  const running = isRunning(stats ?? state);
   const btn = $("#toggle");
   btn.textContent = running ? "Stop camera" : "Start camera";
   btn.classList.toggle("stop", running);
-  const st = $("#status");
-  const status = stats?.status || (running ? "live" : "idle");
-  st.className = "status " + (status === "live" ? "live" : status === "error" ? "error" : "");
-  $("#status-text").textContent = status === "live" ? "Live" : status.charAt(0).toUpperCase() + status.slice(1);
+  const status = running ? (stats?.status === "error" ? "error" : stats?.status === "idle" ? "connecting" : stats?.status || "live") : "idle";
+  $("#status").className = "status " + (status === "live" ? "live" : status === "error" ? "error" : "");
+  $("#status-text").textContent = status.charAt(0).toUpperCase() + status.slice(1);
 }
 
 function renderStats(s) {
   $("#m-fps").textContent = s.fps ?? 0;
+  $("#m-rtt").textContent = bs.running ? `${Math.round(bs.rtt)} ms` : "–";
   $("#m-lat").textContent = `${s.latency_ms ?? 0} ms`;
   $("#m-det").textContent = `${s.detect_ms ?? 0} ms`;
   $("#m-swap").textContent = `${s.swap_ms ?? 0} ms`;
   $("#m-enh").textContent = `${s.enhance_ms ?? 0} ms`;
-  $("#m-faces").textContent = s.faces ?? 0;
-  const facts = [s.camera && `camera ${s.camera}`, s.output && `output ${s.output}`,
-    s.swap_provider && s.swap_provider.replace("ExecutionProvider", ""), s.vcam && `virtual cam: ${s.vcam}`].filter(Boolean);
+  const facts = [`faces ${s.faces ?? 0}`, source() === "server" && s.camera && `camera ${s.camera}`, s.output && `output ${s.output}`,
+    s.swap_provider && s.swap_provider.replace("ExecutionProvider", ""), source() === "server" && s.vcam && `virtual cam: ${s.vcam}`].filter(Boolean);
   $("#facts").textContent = facts.join("  ·  ");
-  showError(s.error);
-  renderRunning(s.running, s);
+  if (s.error) showError(s.error);
+  renderRunning(s);
+}
+
+function switchSource() {
+  document.body.dataset.source = source();
+  const browser = source() === "browser";
+  if (!browser && bs.running) stopBrowser();
+  $("#out").hidden = !browser;
+  $("#preview").hidden = browser;
+  if (browser) $("#preview").removeAttribute("src");
+  else $("#preview").src = "/video.mjpg?t=" + Date.now();
+  if (browser && navigator.mediaDevices) listBrowserCams().catch(() => {});
+  renderRunning(state);
 }
 
 async function load() {
@@ -157,7 +275,8 @@ function bindUpload() {
     $("#up-btn").disabled = true;
     const files = [...file.files];
     const base = $("#up-name").value.trim();
-    let ok = 0, errors = [];
+    let ok = 0;
+    const errors = [];
     for (const [i, f] of files.entries()) {
       msg.textContent = `Finding the face in ${f.name}…`;
       const fd = new FormData();
@@ -175,12 +294,23 @@ function bindUpload() {
   });
 }
 
+async function start() {
+  showError("");
+  if (source() === "browser") await startBrowser();
+  else { const r = await post("/api/start"); state.running = r.running; $("#preview").src = "/video.mjpg?t=" + Date.now(); }
+}
+
+async function stop() {
+  if (source() === "browser") stopBrowser();
+  else { const r = await post("/api/stop"); state.running = r.running; }
+}
+
 $("#toggle").addEventListener("click", async () => {
-  const running = state?.running;
-  const r = await post(running ? "/api/stop" : "/api/start");
-  state.running = r.running;
-  renderRunning(r.running);
-  $("#preview").src = "/video.mjpg?t=" + Date.now();
+  const btn = $("#toggle");
+  btn.disabled = true;
+  try { isRunning(state) ? await stop() : await start(); }
+  catch (e) { stopBrowser(); showError(e.message); }
+  finally { btn.disabled = false; renderRunning(state); }
 });
 $("#scan").addEventListener("click", scanCameras);
 $("#fullscreen").addEventListener("click", () => {
@@ -198,4 +328,4 @@ setInterval(async () => {
 
 bindControls();
 bindUpload();
-load().catch((e) => showError(e.message));
+load().then(switchSource).catch((e) => showError(e.message));

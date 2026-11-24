@@ -53,6 +53,30 @@ builds engines for a few minutes, then they are cached):
 3. In OBS (or Zoom, Meet, Discord) choose **OBS Virtual Camera** as the video source. For an OBS
    browser source instead, use `http://127.0.0.1:7860/video.mjpg?full=1`.
 
+## Run on a rented GPU (Vast.ai)
+
+Use the **NVIDIA CUDA** template (CUDA 12.8 or newer). Copy the project to `/workspace/magicpro`
+on the instance, then:
+
+```bash
+bash /workspace/magicpro/deploy/vast/install.sh
+```
+
+This installs everything into `.venv`, downloads the models, runs the app as the supervisor
+service `magicpro` on `127.0.0.1:17860`, and puts it behind the instance's token auth on open
+port 10100. Logs: `/var/log/portal/magicpro.log`.
+
+Open it from your PC with an SSH tunnel. It is private, needs no token, and the browser counts it
+as localhost, so webcam access is allowed:
+
+```powershell
+ssh -i $HOME\.ssh\vast_magicpro -p <ssh port> -N -L 7860:127.0.0.1:17860 root@<instance ip>
+```
+
+Then browse to <http://localhost:7860>, leave **Webcam input** on "This browser's webcam", and
+press **Start camera**. Your webcam streams to the GPU and the swapped video comes back. Round
+trip is shown on screen. For OBS, full-screen the output and use Window Capture.
+
 ## Quality and latency notes
 
 - **Lip sync.** Every frame is swapped from your live face, so the mouth follows your speech
