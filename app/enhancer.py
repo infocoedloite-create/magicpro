@@ -10,6 +10,7 @@ import numpy as np
 from .align import estimate_affine, template, warp_face
 from .batcher import Batcher
 from .blending import box_mask, paste_back
+from .landmarks import outline_mask
 from .onnx_utils import create_session, input_dtype
 
 
@@ -60,10 +61,12 @@ class FaceEnhancer:
         y = (np.clip(y[0].astype(np.float32), -1, 1) + 1.0) * 127.5
         return np.ascontiguousarray(y.transpose(1, 2, 0)[:, :, ::-1])
 
-    def enhance_into(self, frame, kps, blend=0.8, mask_blur=0.3, fidelity=0.7):
+    def enhance_into(self, frame, kps, blend=0.8, mask_blur=0.3, fidelity=0.7, outline=None):
         M = estimate_affine(kps, self.template)
         crop = warp_face(frame, M, self.size)
         out = self._run(crop, fidelity)
         if blend < 1.0:
             out = out * blend + crop.astype(np.float32) * (1.0 - blend)
-        paste_back(frame, out, M, box_mask(self.size, mask_blur))
+        # with a face outline, restore only the face (not hair or background around it)
+        mask = outline_mask(outline, M, self.size, mask_blur) if outline is not None else box_mask(self.size, mask_blur)
+        paste_back(frame, out, M, mask)

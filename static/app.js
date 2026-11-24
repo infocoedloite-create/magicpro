@@ -440,6 +440,16 @@ $("#toggle").addEventListener("click", async () => {
   finally { btn.disabled = false; renderRunning(state); }
 });
 $("#scan").addEventListener("click", scanCameras);
+
+// Measured best likeness and full jaw/chin coverage (see README, "Swap quality")
+const BEST_QUALITY = {
+  mask_mode: "face", face_mask_expand: 0.08, swap_zoom: 0.9, swap_passes: 2, mask_blur: 0.3,
+  mask_top: 0, mask_bottom: 0, mask_left: 0, mask_right: 0, mouth_mask: false, color_match: 0, enhancer_blend: 0.5,
+};
+$("#preset-best").addEventListener("click", async () => {
+  state.settings = await post("/api/settings", BEST_QUALITY);
+  applySettings(state.settings);
+});
 $("#fullscreen").addEventListener("click", () => {
   if (document.fullscreenElement) document.exitFullscreen();
   else $("#screen").requestFullscreen();

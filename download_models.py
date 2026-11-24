@@ -36,12 +36,12 @@ def main():
     for sub in ("swappers", "enhancers"):
         (ROOT / sub).mkdir(parents=True, exist_ok=True)
 
-    if not (ROOT / "det_10g.onnx").exists() or not (ROOT / "w600k_r50.onnx").exists():
-        print("buffalo_l (SCRFD detector + ArcFace)")
+    if not all((ROOT / n).exists() for n in ("det_10g.onnx", "w600k_r50.onnx", "2d106det.onnx")):
+        print("buffalo_l (SCRFD detector + ArcFace + 106 landmarks)")
         with zipfile.ZipFile(io.BytesIO(fetch(BUFFALO))) as z:
             for member in z.namelist():
                 name = Path(member).name
-                if name in ("det_10g.onnx", "w600k_r50.onnx"):
+                if name in ("det_10g.onnx", "w600k_r50.onnx", "2d106det.onnx"):
                     (ROOT / name).write_bytes(z.read(member))
 
     failed = []

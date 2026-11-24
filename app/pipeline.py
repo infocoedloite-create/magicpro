@@ -18,7 +18,8 @@ import cv2
 import numpy as np
 
 from . import batcher, codec, config
-from .blending import draw_label, swap_mask
+from .blending import draw_label, mouth_mask, swap_mask
+from .landmarks import Landmarks106, face_outline
 from .enhancer import FaceEnhancer
 from .face import FaceDetector, FaceRecognizer, KpsSmoother
 from .library import FaceLibrary
@@ -47,13 +48,17 @@ class Settings:
     swap_enabled: bool = True
     swapper: str = ""
     many_faces: bool = False
+    swap_passes: int = 2               # 2 = swap again on the swapped face: stronger likeness
+    mask_mode: str = "face"            # face = follows the real jawline (106 landmarks) | box = square crop
+    face_mask_expand: float = 0.08     # push the face mask past the jaw edge (fraction of face height)
+    swap_zoom: float = 0.9             # < 1 repaints more chin/jaw around the face
     # detection / tracking (side views: lower threshold, a few hold frames)
     det_size: int = 640
     det_thresh: float = 0.35
     smoothing: float = 0.5
     hold_frames: int = 4
     # blending
-    mask_blur: float = 0.3
+    mask_blur: float = 0.3             # higher blends more of the real face back in (weaker swap)
     mask_top: int = 0
     mask_bottom: int = 0
     mask_left: int = 0
@@ -122,6 +127,7 @@ class TrackState:
         self.last_faces = []
         self.miss = 0
         self.since_full = FULL_DETECT_EVERY
+        self.outlines = []
 
 
 def detect_tracked(detector, frame, s, track):
@@ -306,6 +312,15 @@ class Engine:
             return self._det
 
     @property
+    def landmarks(self):
+        """106-point landmarks for face-shaped masks; None if the model file is missing."""
+        with self._lock:
+            if getattr(self, "_lm", None) is None:
+                path = config.MODELS / "2d106det.onnx"
+                self._lm = Landmarks106(path) if path.exists() else False
+            return self._lm or None
+
+    @property
     def recognizer(self):
         with self._lock:
             if self._rec is None:
@@ -485,18 +500,35 @@ class Engine:
         faces = track.smoother(faces, s.smoothing)
         t1 = time.perf_counter()
 
+        # face-shaped masks that follow each real jawline (measured on the frame before swapping)
+        outlines = [None] * len(faces)
+        lm = self.landmarks if s.mask_mode == "face" else None
+        if lm is not None and faces:
+            outlines = []
+            for i, f in enumerate(faces):
+                o = face_outline(lm.detect(frame, f.bbox), expand=s.face_mask_expand)
+                prev = track.outlines[i] if i < len(track.outlines) else None
+                if prev is not None and prev.shape == o.shape and s.smoothing > 0:
+                    o = prev * (s.smoothing * 0.6) + o * (1 - s.smoothing * 0.6)   # steady mask edge
+                outlines.append(o)
+            track.outlines = outlines
+
         latent = swapper.latent(emb)
-        mask = swap_mask(swapper.output_size(boost), round(s.mask_blur, 2), s.mask_top, s.mask_right, s.mask_bottom,
+        size = swapper.output_size(boost)
+        mask = swap_mask(size, round(s.mask_blur, 2), s.mask_top, s.mask_right, s.mask_bottom,
                          s.mask_left, round(s.mouth_size, 2) if s.mouth_mask else 0.0)
+        keep = (1.0 - mouth_mask(size, round(s.mouth_size, 2))) if s.mouth_mask else None
         color = max(s.color_match, preset_color)
-        for f in faces:
-            swapper.swap_into(frame, f.kps, latent, mask, color, boost)
+        for _ in range(max(1, min(3, s.swap_passes))):
+            for f, o in zip(faces, outlines):
+                swapper.swap_into(frame, f.kps, latent, mask, color, boost, outline=o,
+                                  outline_blur=s.mask_blur, keep=keep, zoom=s.swap_zoom)
         t2 = time.perf_counter()
 
         enhancer = self._get(self._enhancers, config.ENHANCERS, FaceEnhancer, s.enhancer)
         if enhancer is not None and faces:
-            for f in faces:
-                enhancer.enhance_into(frame, f.kps, s.enhancer_blend, s.mask_blur, s.enhancer_fidelity)
+            for f, o in zip(faces, outlines):
+                enhancer.enhance_into(frame, f.kps, s.enhancer_blend, s.mask_blur, s.enhancer_fidelity, outline=o)
         t3 = time.perf_counter()
 
         if s.disclosure_label:

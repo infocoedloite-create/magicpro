@@ -77,6 +77,13 @@
 
       <section class="group" aria-labelledby="h-q">
         <div class="group-head"><h2 id="h-q">Quality</h2></div>
+        <button class="btn primary wide" type="button" id="preset-best">Best quality settings</button>
+        <label class="field"><span>Swap area</span>
+          <select data-key="mask_mode"><option value="face">Whole face, follows jaw and chin</option><option value="box">Square (older)</option></select></label>
+        <label class="range"><span>Jaw and chin coverage <output></output></span><input type="range" data-key="face_mask_expand" min="0" max="0.2" step="0.01"></label>
+        <label class="range"><span>Swap zoom (lower = more chin and jaw) <output></output></span><input type="range" data-key="swap_zoom" min="0.8" max="1" step="0.01"></label>
+        <label class="field"><span>Swap passes</span>
+          <select data-key="swap_passes"><option value="1">1 · fastest</option><option value="2">2 · stronger likeness</option><option value="3">3 · strongest, slowest</option></select></label>
         <label class="field"><span>Face enhancer</span><select data-key="enhancer" id="sel-enhancer"></select></label>
         <label class="range"><span>Enhancer strength <output></output></span><input type="range" data-key="enhancer_blend" min="0" max="1" step="0.05"></label>
         <label class="range"><span>Mask feather <output></output></span><input type="range" data-key="mask_blur" min="0" max="1" step="0.05"></label>

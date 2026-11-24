@@ -19,6 +19,7 @@ import numpy as np
 
 from .align import estimate_affine, template, warp_face
 from .batcher import Batcher
+from .landmarks import outline_mask
 from .blending import color_match, paste_back
 from .onnx_utils import create_session, input_dtype
 
@@ -137,15 +138,28 @@ class FaceSwapper:
     def output_size(self, boost=1):
         return self.size * boost
 
-    def swap_into(self, frame, kps, latent, mask, color_strength=0.0, boost=1):
+    def swap_into(self, frame, kps, latent, mask, color_strength=0.0, boost=1, outline=None,
+                  outline_blur=0.3, keep=None, zoom=1.0):
         """boost > 1 = pixel boost: align the face at size*boost, split it into boost x boost
         interleaved sub-images of the model's native size, swap each and re-interleave. Gives a
-        real 256/512 swap from a 128 model (mask must be output_size(boost) square)."""
+        real 256/512 swap from a 128 model (mask must be output_size(boost) square).
+        outline: face polygon in frame coordinates -> a face-shaped mask that follows the jaw
+        (replaces the square `mask`); keep: crop-space multiplier (e.g. keep the real mouth).
+        zoom < 1 aligns the face smaller in the crop, so more chin and jaw get repainted."""
         size = self.size * boost
-        tmpl = self._boost_templates.get(boost)
+        key = (boost, round(zoom, 3))
+        tmpl = self._boost_templates.get(key)
         if tmpl is None:
-            tmpl = self._boost_templates[boost] = template(self.template_kind, size)
+            tmpl = template(self.template_kind, size)
+            if zoom != 1.0:
+                c = np.float32(size / 2)
+                tmpl = (c + (tmpl - c) * np.float32(zoom)).astype(np.float32)
+            self._boost_templates[key] = tmpl
         M = estimate_affine(kps, tmpl)
+        if outline is not None:
+            mask = outline_mask(outline, M, size, outline_blur)
+            if keep is not None:
+                mask = mask * keep
         crop = warp_face(frame, M, size)
         if boost == 1:
             out = self._infer(crop, latent)
