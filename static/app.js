@@ -36,8 +36,13 @@ function applySettings(s) {
 }
 
 /* ---------------- browser webcam -> GPU -> browser ---------------- */
-const MAX_IN_FLIGHT = 3;
-const bs = { running: false, stream: null, ws: null, sendId: 0, recvId: 0, sent: new Map(), rtt: 0, busy: false, cap: null, capCtx: null, outCtx: null, timer: null };
+// Frames allowed in flight scale with the measured round trip, so a far-away GPU still gets a
+// full frame rate: in-flight = round trip x fps + 1 (e.g. 200 ms at 30 fps -> 7).
+const bs = { running: false, stream: null, ws: null, sendId: 0, recvId: 0, sent: new Map(), rtt: 0, rttAvg: 0, busy: false, cap: null, capCtx: null, outCtx: null, timer: null };
+function maxInFlight() {
+  if (!bs.rttAvg) return 3;
+  return Math.max(2, Math.min(8, Math.ceil((bs.rttAvg * (state?.settings.fps || 30)) / 1000) + 1));
+}
 
 async function listBrowserCams() {
   const sel = $("#sel-bcam");
@@ -75,7 +80,10 @@ async function startBrowser() {
   ws.onmessage = async (e) => {
     const id = new DataView(e.data).getUint32(0, true);
     const t = bs.sent.get(id);
-    if (t) bs.rtt = performance.now() - t;
+    if (t) {
+      bs.rtt = performance.now() - t;
+      bs.rttAvg = bs.rttAvg ? bs.rttAvg * 0.9 + bs.rtt * 0.1 : bs.rtt;
+    }
     for (const k of bs.sent.keys()) if (k <= id) bs.sent.delete(k);
     if (id <= bs.recvId) return;   // an older frame finished after a newer one: never step back
     bs.recvId = id;
@@ -99,7 +107,7 @@ async function startBrowser() {
 async function pump() {
   const ws = bs.ws;
   if (!bs.running || bs.busy || !ws || ws.readyState !== 1 || ws.bufferedAmount > 4e6) return;
-  if (bs.sendId - bs.recvId >= MAX_IN_FLIGHT) {
+  if (bs.sendId - bs.recvId >= maxInFlight()) {
     const oldest = bs.sent.values().next().value;
     if (!oldest || performance.now() - oldest < 1500) return;
     bs.recvId = bs.sendId; bs.sent.clear();   // a reply went missing: don't stall
@@ -127,6 +135,7 @@ function stopBrowser() {
   bs.stream?.getTracks().forEach((t) => t.stop());
   bs.stream = null;
   bs.rtt = 0;
+  bs.rttAvg = 0;
 }
 
 /* ---------------- library ---------------- */
@@ -180,7 +189,7 @@ function bindControls() {
     if (el.type !== "range") el.addEventListener("change", send);
   });
   const sq = $("#send-q");
-  sq.value = localStorage.sendQ || 80;
+  sq.value = localStorage.sendQ || 70;
   sq.closest(".range").querySelector("output").textContent = sq.value;
   sq.addEventListener("input", () => { localStorage.sendQ = sq.value; sq.closest(".range").querySelector("output").textContent = sq.value; });
   $("#sel-bcam").addEventListener("change", async (e) => {
