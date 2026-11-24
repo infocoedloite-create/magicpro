@@ -93,7 +93,7 @@ def test_daily_cap_and_session_cap():
     c2 = start_claims(user)
     assert c2["exp"] - c2["iat"] == 1800                                # token capped by what's left today
     r = usage(user, c2["sid"], "u1", 1800).json()
-    assert r == {"ok": True, "remaining": 0, "stop": True}              # daily limit hit -> stop
+    assert r == {"ok": True, "remaining": 0, "stop": True, "reason": "daily_limit"}   # daily limit hit -> stop
     r = user.post("/api/start")
     assert r.status_code == 429 and "today" in r.json()["detail"]
     assert user.get("/api/me").json()["balance_s"] == 8 * 3600          # balance itself untouched beyond use
@@ -262,6 +262,115 @@ def test_pool_limits_reach_pool_and_nodes():
     assert owner.post("/api/admin/limits", json={"max_gpus": 999}).status_code == 400
     assert owner.post("/api/admin/limits", json={"daily_hours": -1}).status_code == 400
     assert owner.get("/api/admin/limits").json()["limits"]["max_gpus"] == 2
+
+
+def test_gpu_off_idle_and_auto_start_again():
+    app, db, pool, vast = build()
+    owner, user = clients(app)
+    db.credit("u1", 3600, "grant", "g1")
+    r = owner.post("/api/admin/gpu/off", json={"id": "7"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "stopped": ["7"], "users_cut_off": 0}, r.text
+    assert ("state", "7", "stopped") in vast.calls and pool.nodes["7"].bad_until == 0   # manual off is not "broken"
+    g = owner.get("/api/pool").json()["nodes"][0]
+    assert g["status"] in ("stopped", "stopping") and g["uptime_s"] == 0
+    # nobody waiting: the pool doesn't restart it on its own
+    vast.calls.clear()
+    pool.last_refresh = 0
+    owner.get("/api/pool")
+    assert ("state", "7", "running") not in vast.calls
+    # the next customer presses Start: the same GPU starts again through the pool
+    r = user.post("/api/start").json()
+    assert r.get("wait") and ("state", "7", "running") in vast.calls, (r, vast.calls)
+    vast.boot(7)
+    node_beat(TestClient(app, base_url=SITE), 7, "n1", "https://n7.trycloudflare.com")
+    assert "url" in user.post("/api/start").json()
+    audit = owner.get("/api/admin/audit").json()["audit"]
+    assert audit[-1]["action"] == "gpu_off" and audit[-1]["detail"] == "0 streaming user(s) cut off" and audit[-1]["admin"] == "owner@example.com"
+
+
+def test_gpu_off_with_people_streaming():
+    app, db, pool, vast = build()
+    owner, user = clients(app)
+    user2 = sign_in(TestClient(app, base_url=SITE), "u2", "two@example.com")
+    for sub in ("u1", "u2"):
+        db.credit(sub, 3600, "grant", f"g-{sub}")
+    sid1 = start_claims(user)["sid"]
+    free_node(pool)
+    sid2 = start_claims(user2)["sid"]
+    usage(user, sid1, "u1", 60)
+    usage(user2, sid2, "u2", 30)
+    assert owner.get("/api/pool").json()["nodes"][0]["users"] == 2
+    r = owner.post("/api/admin/gpu/off", json={"id": "7"})
+    assert r.status_code == 409 and r.json()["users"] == 2 and r.json()["needs_confirm"], r.text
+    assert ("state", "7", "stopped") not in vast.calls                  # nothing happens without the confirmation
+    r = owner.post("/api/admin/gpu/off", json={"id": "7", "confirm": True}).json()
+    assert r["users_cut_off"] == 2
+    # their pages get stop: true with reason "ended" and are not charged after that
+    rep = usage(user, sid1, "u1", 500).json()
+    assert rep["stop"] is True and rep["reason"] == "ended"
+    assert db.get_user("u1")["balance_s"] == 3600 - 60
+    assert usage(user2, sid2, "u2", 900).json()["reason"] == "ended" and db.get_user("u2")["balance_s"] == 3600 - 30
+    # the page's automatic reconnect doesn't switch the GPU back on; pressing Start does
+    r = user.post("/api/start", json={"reconnect": True})
+    assert r.status_code == 409 and "turned off" in r.json()["detail"]
+    assert user.post("/api/start").json().get("wait") is True
+    assert owner.get("/api/admin/audit").json()["audit"][0]["detail"] == "2 streaming user(s) cut off"
+
+
+def test_gpu_turn_on_and_all_off():
+    app, db, pool, vast = build()
+    owner, _ = clients(app)
+    vast.add(8)                                                          # a second, stopped pool GPU
+    assert owner.post("/api/admin/gpu/on", json={"id": "8"}).status_code == 200
+    assert ("state", "8", "running") in vast.calls
+    assert owner.get("/api/pool").json()["nodes"][1]["status"] == "starting"
+    r = owner.post("/api/admin/gpu/off", json={"all": True}).json()
+    assert sorted(r["stopped"]) == ["7", "8"]
+    assert [a["action"] for a in owner.get("/api/admin/audit").json()["audit"][:2]] == ["gpu_off_all", "gpu_on"]
+    owner.post("/api/admin/limits", json={"max_gpus": 0})
+    assert "limit" in owner.post("/api/admin/gpu/on", json={"id": "8"}).json()["detail"]
+    assert owner.post("/api/admin/gpu/off", json={"id": "99"}).status_code == 404
+    _, user = clients(app)
+    assert user.post("/api/admin/gpu/off", json={"all": True}).status_code == 403
+
+
+def test_maintenance_switch():
+    app, db, pool, vast = build()
+    owner, user = clients(app)
+    db.credit("u1", 3600, "grant", "g1")
+    owner.post("/api/admin/gpu/off", json={"id": "7"})
+    owner.post("/api/admin/limits", json={"maintenance": True})
+    r = user.post("/api/start")
+    assert r.status_code == 503 and r.json()["detail"] == "Service is paused, try again later."
+    pool.waiting["someone"] = time.time()                                # even with demand, nothing starts
+    vast.calls.clear(); pool.last_refresh = 0; pool.last_scale = 0
+    owner.get("/api/pool")
+    assert ("state", "7", "running") not in vast.calls and owner.get("/api/pool").json()["paused"] is True
+    assert owner.post("/api/admin/gpu/on", json={"id": "7"}).status_code == 200   # an admin still can, by hand
+    owner.post("/api/admin/gpu/off", json={"id": "7"})
+    owner.post("/api/admin/limits", json={"maintenance": False})
+    vast.calls.clear()
+    assert user.post("/api/start").json().get("wait") and ("state", "7", "running") in vast.calls
+
+
+def test_auto_stop_after_use():
+    """The node side: after the last stream ends, the watchdog stops the GPU after the grace the website sends (300 s)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vast", "watchdog"))
+    import watchdog
+    app, db, pool, vast = build()
+    grace = node_beat(TestClient(app, base_url=SITE), 7, "n1", "https://n7.trycloudflare.com").json()["grace_s"]
+    watchdog.set_grace(grace)
+    clock = Clock()
+    wd = watchdog.Watchdog(clock=clock)
+    assert wd.tick(2, 0, False, 0)[0] is None                            # two people streaming
+    clock.t += 3600
+    assert wd.tick(1, 0, False, 0)[0] is None
+    clock.t += 60
+    assert wd.tick(0, 0, False, 0)[0] is None                            # last stream ended: grace starts
+    clock.t += 299
+    assert wd.tick(0, 0, False, 0)[0] is None
+    clock.t += 2
+    assert "grace 300s" in wd.tick(0, 0, False, 0)[0]
 
 
 if __name__ == "__main__":

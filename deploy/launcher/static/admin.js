@@ -152,6 +152,7 @@
   // ---- limits ----
   async function loadLimits() {
     const { limits } = await call("/api/admin/limits");
+    $("#grace-min").textContent = limits.idle_grace_minutes;
     const f = $("#limits-form");
     for (const [k, v] of Object.entries(limits)) {
       const input = f.elements[k];
@@ -186,17 +187,48 @@
   });
 
   // ---- GPUs and audit ----
+  const dur = (sec) => (sec ? `${Math.floor(sec / 3600)} h ${String(Math.floor((sec % 3600) / 60)).padStart(2, "0")} min` : "");
+  async function gpuOff(body, label) {
+    if (!confirm(`${label}?`)) return;
+    try {
+      const r = await call("/api/admin/gpu/off", body);
+      msg(`Turned off: ${r.stopped.join(", ") || "none"}.`);
+    } catch (e) {
+      if (!/streaming/.test(e.message)) throw e;
+      if (!confirm(`${e.message} Turn off anyway?`)) return;
+      const r = await call("/api/admin/gpu/off", { ...body, confirm: true });
+      msg(`Turned off: ${r.stopped.join(", ") || "none"}. ${r.users_cut_off} streaming user(s) were cut off and are no longer charged.`);
+    }
+    loadPool(); loadAudit();
+  }
   async function loadPool() {
     try {
       const s = await call("/api/pool");
       $("#pool-note").textContent = `GPU cost right now: $${s.billing_per_hour}/h · at most ${s.limits.max_nodes} GPUs` + (s.note ? ` · ${s.note}` : "");
-      $("#nodes").replaceChildren(...s.nodes.map((n) => el("tr", {},
-        td(`${n.id}${n.gpu ? " · " + n.gpu : ""}`), td(n.state + (n.dry_run ? " (test)" : "")), td(n.users), td(`${n.load} / ${n.budget}`), td(n.price_per_hour))));
+      $("#maint").checked = !!s.paused;
+      $("#nodes").replaceChildren(...s.nodes.map((n) => {
+        const on = ["running", "starting"].includes(n.status);
+        const action = n.status === "stopping" ? "" : on
+          ? btn("Turn off now", "danger", () => gpuOff({ id: n.id }, `Turn GPU ${n.id} off now`))
+          : btn("Turn on now", "", async () => {
+              await call("/api/admin/gpu/on", { id: n.id });
+              msg(`Turning GPU ${n.id} on. It is ready in 1-2 minutes.`); loadPool(); loadAudit();
+            });
+        return el("tr", {}, td(`${n.id}${n.gpu ? " · " + n.gpu : ""}`), td(n.status + (n.dry_run ? " (test)" : "")), td(n.users),
+          td(dur(n.uptime_s)), td(n.uptime_s ? `$${n.cost_usd}` : ""), td(n.price_per_hour), td(action));
+      }));
+      if (!s.nodes.length) $("#nodes").replaceChildren(el("tr", {}, el("td", { colSpan: 7, className: "muted", textContent: "No GPUs in the pool yet." })));
     } catch (e) { $("#pool-note").textContent = e.message; }
   }
-  $("#stop-idle").addEventListener("click", async () => {
-    if (!confirm("Stop every GPU nobody is streaming on?")) return;
-    try { const r = await call("/api/pool/stop-all", {}); msg(`Stopping: ${r.stopped.join(", ") || "none"}`); loadPool(); } catch (e) { msg(e.message, "bad"); }
+  $("#off-all").addEventListener("click", () => gpuOff({ all: true }, "Turn every GPU off now").catch((e) => msg(e.message, "bad")));
+  $("#maint").addEventListener("change", async (e) => {
+    const on = e.target.checked;
+    const ask = 'Pause the service? Start will show "Service is paused, try again later" and no GPU starts by itself. Running GPUs keep running until you turn them off.';
+    if (on && !confirm(ask)) { e.target.checked = false; return; }
+    try {
+      await call("/api/admin/limits", { maintenance: on });
+      msg(on ? "Service paused." : "Service open again."); loadPool(); loadAudit();
+    } catch (err) { msg(err.message, "bad"); e.target.checked = !on; }
   });
   async function loadAudit() {
     const { audit } = await call("/api/admin/audit");

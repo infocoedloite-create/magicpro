@@ -174,7 +174,7 @@ JSON key base64-encoded, saved as secret `pool-image-login` with the value
   payments, GPUs and an audit log
 * GPU handoff exactly as `docs/handoff-contract.md`: Start → a ready node from the pool (or "Starting
   GPU…" while one boots) → HS256 token → `{gpu_base}/session?t=…`; usage reports at
-  `/api/gpu/usage` charge only the increase of `total_seconds` per `sid`. `MAGIC_SESSION_SECRET` is
+  `/api/gpu/usage` charge only the increase of `total_seconds` per `sid`; a reply with `stop: true` also says why in `reason` (`ended`, `blocked`, `replaced`, `daily_limit`, `balance`). `MAGIC_SESSION_SECRET` is
   used as the HMAC key as stored (its UTF-8 bytes), for the token and for the report signature.
 * Data in Firestore (`users`, `ledger`, `orders`, `sessions`, `invites`, `packages`, `config`,
   `stats`, `audit`). All rules are in `store.Store`; Firestore only runs its transactions.
@@ -207,6 +207,21 @@ plus anyone an admin marks as admin. Everything an admin changes is written to t
   page and the Buy screen show the packages on sale. An order keeps its own copy of hours, price
   and validity, so editing a package never changes orders already made or paid. On the first start
   the packages come from `PACKS` (defaults ₹499 / ₹799 / ₹1,499 for 3 / 5 / 10 h, placeholders).
+* **GPUs:** every pool GPU with its status (running, starting, stopping, stopped, unavailable),
+  people streaming now, time up in this run and its cost so far (Vast hourly price × uptime), and
+  **Turn off now** / **Turn on now**, plus **Turn all GPUs off**. Turning off goes through the Vast
+  API, so it works whatever state the GPU's own software is in.
+  * With people streaming, the page first says how many will be cut off and asks again. Their
+    sessions end at once: their next usage report gets `stop: true` with `reason: "ended"`, nothing
+    is charged after the turn-off, and their page's automatic reconnect does not switch a GPU back on
+    (pressing **Start the studio** does).
+  * A manual off is not a block. The next customer who presses Start, or an admin pressing Turn on,
+    starts that GPU again through the pool as usual, and it turns itself off again after the idle
+    time (5 minutes after the last stream ends). A GPU turned off by hand is never marked as broken.
+  * **Keep GPUs off until I untick this** (maintenance, off by default): Start shows "Service is
+    paused, try again later" and the pool starts nothing by itself; GPUs that are on stay on until
+    you turn them off; Turn on still works for admins.
+  * Every manual on/off goes into the audit log with who, when and how many people were cut off.
 * **Limits** (everyone; the first three can be overridden per user):
 
   | Limit | Default | Enforced |
@@ -222,7 +237,7 @@ plus anyone an admin marks as admin. Everything an admin changes is written to t
 Offline tests (fake Google, fake Razorpay, simulated Vast):
 
 ```bash
-python deploy/launcher/test_admin.py   # blocked user, daily cap, session cap, single session, signups closed, packages vs paid orders, validity, roles, overview, pool limits
+python deploy/launcher/test_admin.py   # blocked user, daily cap, session cap, single session, signups closed, packages vs paid orders, validity, roles, overview, pool limits, GPU off/on with and without people streaming, auto start after a manual off, auto stop after use, maintenance
 python deploy/launcher/test_web.py && python deploy/launcher/test_pool.py
 ```
 

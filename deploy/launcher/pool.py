@@ -132,6 +132,7 @@ class Node:
     bad_until: float = 0.0
     suspect_until: float = 0.0       # a user reported it unreachable
     reserved: list = field(default_factory=list)   # [(t, cost)]
+    on_since: float = 0.0            # first time we saw it running in this run (uptime fallback)
 
 
 class Pool:
@@ -144,6 +145,7 @@ class Pool:
         self.note = ""                # last scaling message, shown in the pool view
         self.lock = asyncio.Lock()
         self.grace_s = None           # idle grace handed to nodes in the heartbeat reply (website limit)
+        self.paused = False           # maintenance: start nothing automatically (website limit)
         self.cost_cb = None           # called with (usd, seconds) about once a minute while GPUs bill
         self._cost_t, self._cost_usd, self._cost_s = None, 0.0, 0.0
 
@@ -162,6 +164,10 @@ class Pool:
             seen.add(iid)
             n = self.nodes.setdefault(iid, Node(iid))
             n.inst, n.nonce = inst, label.partition(":")[2]
+            if inst.get("actual_status") == "running":
+                n.on_since = n.on_since or now
+            else:
+                n.on_since = 0.0
             if inst.get("intended_status") == "running" and not n.start_t and not self._fresh(n):
                 n.start_t, n.start_kind = now, n.start_kind or "unknown"   # booting when we first saw it
         for iid in [i for i in self.nodes if i not in seen and not (self.nodes[i].start_kind == "create"
@@ -208,18 +214,35 @@ class Pool:
 
     def summary(self) -> dict:
         nodes = []
+        friendly = {"ready": "running", "unhealthy": "running", "booting": "starting", "stopping": "stopping",
+                    "stopped": "stopped", "unavailable": "unavailable", "failed": "unavailable"}
         for n in sorted(self.nodes.values(), key=lambda n: int(n.id) if n.id.isdigit() else 0):
             st = self.state(n)
-            nodes.append({"id": n.id, "state": st, "users": n.beat.get("users", 0) if self._fresh(n) else 0,
+            up = self.uptime(n)
+            dph = float(n.inst.get("dph_total") or 0)
+            nodes.append({"id": n.id, "state": st, "status": friendly.get(st, st), "uptime_s": int(up),
+                          "cost_usd": round(dph * up / 3600, 2), "users": n.beat.get("users", 0) if self._fresh(n) else 0,
                           "load": round(float(n.beat.get("load") or 0) + self.reserved(n), 2), "budget": self.budget(n),
                           "gpu": n.inst.get("gpu_name"), "price_per_hour": round(float(n.inst.get("dph_total") or 0), 3),
                           "stop_in_s": n.beat.get("stop_in_s") if self._fresh(n) else None,
                           "dry_run": n.beat.get("dry_run"), "where": n.inst.get("geolocation")})
         billing = [x for x in nodes if x["state"] in ("ready", "booting", "unhealthy", "stopping")]
-        return {"nodes": nodes, "waiting": len(self._waiting()), "note": self.note,
+        return {"nodes": nodes, "waiting": len(self._waiting()), "note": self.note, "paused": self.paused,
                 "billing_per_hour": round(sum(x["price_per_hour"] for x in billing), 3),
                 "limits": {"max_nodes": self.cfg.max_nodes, "max_instances": self.cfg.max_instances,
                            "min_warm": self.cfg.min_warm, "max_dph": self.cfg.max_dph}}
+
+    def uptime(self, n: Node) -> float:
+        """Seconds this node has been running in its current run (0 when off)."""
+        if n.inst.get("actual_status") != "running":
+            return 0.0
+        mins = n.inst.get("uptime_mins")
+        if mins is not None:
+            try:
+                return max(0.0, float(mins) * 60)
+            except (TypeError, ValueError):
+                pass
+        return max(0.0, self.clock() - n.on_since) if n.on_since else 0.0
 
     def _waiting(self):
         now = self.clock()
@@ -314,6 +337,9 @@ class Pool:
         for i, st in states.items():
             if st in ("unavailable", "failed"):
                 acts.append(("stop", i, "GPU rented by someone else" if st == "unavailable" else "did not come up"))
+        if self.paused:
+            self.note = "Paused for maintenance: no GPU starts until an admin turns the pause off."
+            return acts
         active = [i for i, st in states.items() if st in ("ready", "booting", "unhealthy")]
         supply = sum(max(0.0, self.free(self.nodes[i])) for i in active if states[i] == "ready")
         supply += sum(self.budget(self.nodes[i]) for i in active if states[i] == "booting")
@@ -422,6 +448,37 @@ class Pool:
                 "label": f"{self.cfg.label}:{nonce}", "runtype": "jupyter_direc ssh_direc ssh_proxy",
                 "onstart": "entrypoint.sh", "cancel_unavail": True, "image_login": self.cfg.image_login or None}
 
+    async def turn_off(self, node_id: str):
+        """Admin: stop this GPU now. Not a failure: the next Start can restart it as usual."""
+        async with self.lock:
+            n = self.nodes.get(str(node_id))
+            if n is None:
+                raise RuntimeError("No such GPU.")
+            r = await self.vast.set_state(n.id, "stopped")
+            if r.get("success") is False:
+                raise RuntimeError(f"Vast.ai refused to stop {n.id}: {r.get('msg')}")
+            n.inst["intended_status"] = "stopped"
+            n.beat_t, n.start_t, n.reserved = 0.0, 0.0, []      # gone now: no routing to it, no stale heartbeat
+            self.note = f"GPU {n.id} turned off by an admin."
+            self.log(f"pool: manual off {n.id}")
+
+    async def turn_on(self, node_id: str):
+        """Admin: start this GPU now (also when paused). Clears any failure cooldown."""
+        async with self.lock:
+            n = self.nodes.get(str(node_id))
+            if n is None:
+                raise RuntimeError("No such GPU.")
+            running = [m for m in self.nodes.values() if m is not n and self.state(m) in ("ready", "booting", "unhealthy")]
+            if len(running) >= self.cfg.max_nodes:
+                raise RuntimeError(f"{len(running)} GPUs are already on, the limit is {self.cfg.max_nodes}.")
+            r = await self.vast.set_state(n.id, "running")
+            if r.get("success") is False:
+                raise RuntimeError(f"Vast.ai refused to start {n.id}: {r.get('msg')}")
+            n.inst["intended_status"] = "running"
+            n.start_t, n.start_kind, n.bad_until = self.clock(), "restart", 0.0
+            self.note = f"Turning GPU {n.id} on…"
+            self.log(f"pool: manual on {n.id}")
+
     async def stop_all(self, force=False) -> list:
         async with self.lock:
             await self.refresh(force=True)
@@ -433,6 +490,7 @@ class Pool:
                     continue
                 await self.vast.set_state(n.id, "stopped")
                 n.inst["intended_status"] = "stopped"
+                n.beat_t, n.start_t, n.reserved = 0.0, 0.0, []
                 done.append(n.id)
             return done
 

@@ -28,17 +28,17 @@
   }
 
   // ---- Start: wait for a GPU, then go to it ----
-  let waiting = false, timer = null, exclude = "";
+  let waiting = false, timer = null, exclude = "", reconnecting = false;
   async function tryStart() {
     if (!waiting) return;
     try {
-      const r = await call("/api/start", { exclude });
+      const r = await call("/api/start", { exclude, reconnect: reconnecting });
       if (r.url) { $("#start-text").textContent = "Opening your studio…"; location.href = r.url; return; }
       $("#start-text").textContent = r.text || "Starting GPU…";
     } catch (e) { stopWaiting(); show($("#start-error"), e.message); return; }
     timer = setTimeout(tryStart, 3000);
   }
-  function stopWaiting() { waiting = false; clearTimeout(timer); $("#start-status").hidden = true; $("#cancel").hidden = true; $("#start").disabled = false; }
+  function stopWaiting() { waiting = false; reconnecting = false; exclude = ""; clearTimeout(timer); $("#start-status").hidden = true; $("#cancel").hidden = true; $("#start").disabled = false; }
   $("#start").addEventListener("click", () => {
     waiting = true; show($("#start-error"), "");
     $("#start").disabled = true; $("#cancel").hidden = false; $("#start-status").hidden = false;
@@ -78,7 +78,7 @@
   const code = qs.get("code");
   if (code) { $("#code").value = code; history.replaceState(null, "", "/app"); }
   if (qs.has("reconnect")) {
-    exclude = qs.get("exclude") || "";
+    exclude = qs.get("exclude") || ""; reconnecting = true;
     history.replaceState(null, "", "/app");
     $("#start").click();
     $("#start-text").textContent = "Your GPU stopped answering. Moving you to another one…";

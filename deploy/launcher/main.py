@@ -119,6 +119,7 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
         pool.cfg.max_nodes = int(lim["max_gpus"])
         pool.cfg.max_instances = max(int(lim["max_gpus"]), 0)
         pool.grace_s = float(lim["idle_grace_minutes"]) * 60
+        pool.paused = bool(lim.get("maintenance"))
 
     apply_pool_limits(db.get_limits())
 
@@ -265,6 +266,13 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
         u = await run_in_threadpool(need_user, request)          # blocked users get 403 here
         lim = await run_in_threadpool(db.user_limits, u)
         apply_pool_limits(await run_in_threadpool(db.get_limits))
+        if lim.get("maintenance"):
+            raise HTTPException(503, "Service is paused, try again later.")
+        if body.get("reconnect") and u.get("active_sid"):
+            # the page lost its GPU: if an admin turned that GPU off, don't start one again by itself
+            last = await run_in_threadpool(db.get_session, u["active_sid"])
+            if last and last.get("ended_by") == "admin":
+                raise HTTPException(409, "Your session was ended because the GPU was turned off. Press Start the studio to begin again.")
         bal = float(u.get("balance_s", 0))
         if bal <= 0:
             raise HTTPException(402, "You have no hours left. Buy a package to continue.")
@@ -308,7 +316,7 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
         except (ValueError, KeyError, TypeError) as e:
             raise HTTPException(400, "bad report") from e
         try:
-            _, u, _ = await run_in_threadpool(db.charge_usage, sid, sub, total, bool(rep.get("streaming", True)))
+            _, u, sess = await run_in_threadpool(db.charge_usage, sid, sub, total, bool(rep.get("streaming", True)))
         except storemod.StoreError:
             return JSONResponse({"ok": False, "remaining": 0, "stop": True}, 404)
         lim = await run_in_threadpool(db.user_limits, u)
@@ -317,8 +325,11 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
         if left is not None:
             remaining = min(remaining, left)
         superseded = bool(lim["single_session"]) and u.get("active_sid") not in (None, sid)
-        stop = remaining <= 0 or bool(u.get("disabled")) or superseded
-        return {"ok": True, "remaining": int(remaining), "stop": stop}
+        # reason is informational for the GPU page: ended (GPU turned off by an admin), blocked,
+        # replaced (a newer Start), daily_limit, balance
+        reason = ("ended" if sess.get("ended") else "blocked" if u.get("disabled") else "replaced" if superseded
+                  else "balance" if float(u["balance_s"]) <= 0 else "daily_limit" if remaining <= 0 else "")
+        return {"ok": True, "remaining": int(remaining), "stop": bool(reason), **({"reason": reason} if reason else {})}
 
     # ---------------- payments ----------------
     @app.post("/api/pay/order")
@@ -561,6 +572,13 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
         return {"ok": True}
 
     # ---------------- GPU pool (admin) and nodes ----------------
+    def streaming_by_node():
+        out = {}
+        for x in db.list_sessions(None, time.time() - ONLINE_WINDOW, 1000):
+            if x.get("streaming") and not x.get("ended"):
+                out.setdefault(str(x.get("node")), set()).add(x["sub"])
+        return out
+
     @app.get("/api/pool")
     async def pool_view(request: Request):
         await run_in_threadpool(need_admin, request)
@@ -568,7 +586,51 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
             await pool.tick()
         except RuntimeError:
             pass
-        return pool.summary()
+        s = pool.summary()
+        live = await run_in_threadpool(streaming_by_node)
+        for n in s["nodes"]:
+            n["users"] = max(int(n["users"] or 0), len(live.get(n["id"], ())))
+        return s
+
+    @app.post("/api/admin/gpu/off")
+    async def gpu_off(request: Request, body: dict = Body(...)):
+        """Turn one GPU (id) or all GPUs (all: true) off now. With people streaming, the first call
+        answers 409 with how many; resend with confirm: true. Their sessions end and stop being charged."""
+        a = await run_in_threadpool(need_admin, request)
+        try:
+            await pool.refresh(force=True)
+        except RuntimeError as e:
+            raise HTTPException(503, str(e)) from e
+        ids = [i for i, n in pool.nodes.items() if n.inst.get("intended_status") != "stopped"] if body.get("all") else [str(body.get("id", ""))]
+        if not body.get("all") and ids[0] not in pool.nodes:
+            raise HTTPException(404, "No such GPU.")
+        live = await run_in_threadpool(streaming_by_node)
+        affected = sorted({sub for i in ids for sub in live.get(i, ())})
+        if affected and not body.get("confirm"):
+            return JSONResponse({"detail": f"{len(affected)} {'person is' if len(affected) == 1 else 'people are'} streaming and will be cut off.",
+                                 "users": len(affected), "needs_confirm": True}, 409)
+        done = []
+        for i in ids:
+            try:
+                await pool.turn_off(i)
+            except RuntimeError as e:
+                raise HTTPException(502, str(e)) from e
+            await run_in_threadpool(db.end_sessions, i, "admin", ONLINE_WINDOW)
+            done.append(i)
+        await run_in_threadpool(db.audit, a["email"], "gpu_off_all" if body.get("all") else "gpu_off", ",".join(done),
+                                f"{len(affected)} streaming user(s) cut off")
+        return {"ok": True, "stopped": done, "users_cut_off": len(affected)}
+
+    @app.post("/api/admin/gpu/on")
+    async def gpu_on(request: Request, body: dict = Body(...)):
+        a = await run_in_threadpool(need_admin, request)
+        try:
+            await pool.refresh(force=True)
+            await pool.turn_on(str(body.get("id", "")))
+        except RuntimeError as e:
+            raise HTTPException(400, str(e)) from e
+        await run_in_threadpool(db.audit, a["email"], "gpu_on", str(body.get("id", "")), "turned on by hand")
+        return {"ok": True}
 
     @app.post("/api/pool/stop-all")
     async def stop_all(request: Request, body: dict = Body(default={})):

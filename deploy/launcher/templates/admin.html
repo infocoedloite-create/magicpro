@@ -69,8 +69,12 @@
     <div class="box" id="gpus">
       <h2>GPUs</h2>
       <p class="muted" id="pool-note"></p>
-      <div class="table-scroll"><table><thead><tr><th>GPU</th><th>State</th><th>Users</th><th>Load</th><th>US$ per hour</th></tr></thead><tbody id="nodes"></tbody></table></div>
-      <div class="actions"><button class="btn danger" id="stop-idle" type="button">Stop idle GPUs now</button></div>
+      <div class="table-scroll"><table><thead><tr><th>GPU</th><th>Status</th><th>Streaming now</th><th>Up for</th><th>Cost this run</th><th>US$ per hour</th><th></th></tr></thead><tbody id="nodes"></tbody></table></div>
+      <p class="small muted">A GPU you turn off starts again by itself when the next customer presses Start, and turns itself off again <span id="grace-min">5</span> minutes after the last stream ends (the idle time under Limits). Turning off a GPU ends the sessions on it; those people are not charged after that.</p>
+      <div class="actions">
+        <button class="btn danger" id="off-all" type="button">Turn all GPUs off</button>
+        <label class="check" for="maint"><input id="maint" type="checkbox"> Keep GPUs off until I untick this (customers see "Service is paused")</label>
+      </div>
     </div>
 
     <div class="box" id="audit">

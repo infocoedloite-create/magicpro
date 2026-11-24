@@ -27,6 +27,7 @@ DEFAULT_LIMITS = {
     "single_session": True,       # a new Start ends the user's previous session
     "signups_open": True,         # closed: only existing users and people with a valid invite code
     "max_gpus": 5,                # pool cap
+    "maintenance": False,         # keep GPUs off: Start answers "Service is paused" until switched back
     "idle_grace_minutes": 5,      # a GPU with nobody streaming stops after this (dead-man on the node stays 15 min)
 }
 USER_OVERRIDES = ("max_session_hours", "daily_hours", "single_session")
@@ -379,7 +380,8 @@ class Store:
             today = day_key(now)
             if u.get("day") != today:
                 u["day"], u["day_used_s"] = today, 0.0
-            delta = max(0.0, float(total_seconds) - float(s.get("charged_s", 0)))
+            # a session an admin ended (GPU turned off) is never charged again
+            delta = 0.0 if s.get("ended") else max(0.0, float(total_seconds) - float(s.get("charged_s", 0)))
             if delta:
                 s["charged_s"] = float(total_seconds)
                 _spend(u, delta)
@@ -393,6 +395,26 @@ class Store:
             v.set("users", sub, u)
             return delta, u, s
         return self.b.run(fn)
+
+    def end_sessions(self, node=None, reason="admin", window=None):
+        """End the live sessions on one GPU (node id) or on all GPUs (node=None).
+        -> {sub: sid} of the people who were streaming (reported within `window` seconds)."""
+        now = self.clock()
+        rows = self.b.query("sessions", [("node", "==", str(node))] if node is not None else ())
+        live = {}
+        for sess in rows:
+            if sess.get("ended") or float(sess.get("exp") or 0) <= now:
+                continue
+            if window is not None and sess.get("streaming") and (sess.get("last_report") or 0) >= now - window:
+                live[sess["sub"]] = sess["sid"]
+
+            def fn(v, sid=sess["sid"]):
+                x = v.get("sessions", sid)
+                if x and not x.get("ended"):
+                    x.update(ended=True, ended_by=reason, ended_t=now)
+                    v.set("sessions", sid, x)
+            self.b.run(fn)
+        return live
 
     def list_sessions(self, sub=None, since=None, limit=50):
         where = [("sub", "==", sub)] if sub else []

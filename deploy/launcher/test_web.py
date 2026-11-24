@@ -240,7 +240,7 @@ def test_start_token_and_usage():
     me = c.get("/api/me").json()
     assert me["sessions"][0]["used_s"] == 160
     r = usage(c, sid, "u1", 99999).json()
-    assert r == {"ok": True, "remaining": 0, "stop": True}
+    assert r == {"ok": True, "remaining": 0, "stop": True, "reason": "balance"}
     assert c.post("/api/start").status_code == 402
     # short balance -> short token
     app.state.store.credit("u1", 600, "grant", "g2")
