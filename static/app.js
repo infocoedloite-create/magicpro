@@ -443,9 +443,9 @@ $("#scan").addEventListener("click", scanCameras);
 
 // Measured best likeness and full jaw/chin coverage (see README, "Swap quality")
 const BEST_QUALITY = {
-  mask_mode: "face", face_mask_expand: 0.05, chin_extend: 0.04, swap_zoom: 0.9, swap_passes: 1, mask_blur: 0.3,
+  mask_mode: "face", face_mask_expand: 0.08, chin_extend: 0.04, swap_zoom: 0.9, swap_passes: 1, mask_blur: 0.3,
   mask_top: 0, mask_bottom: 0, mask_left: 0, mask_right: 0, mouth_mask: false, mouth_keep: "inner", mouth_size: 1.0,
-  edge_detail: 1.0, color_match: 0, enhancer: "gfpgan_1.4", enhancer_blend: 0.5, smoothing: 0.5,
+  edge_detail: 0.4, color_match: 0, enhancer: "gfpgan_1.4", enhancer_blend: 0.5, smoothing: 0.5,
   det_thresh: 0.5, track_thresh: 0.3, hold_ms: 600,
 };
 $("#preset-best").addEventListener("click", async () => {

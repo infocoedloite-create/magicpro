@@ -50,10 +50,11 @@ class Settings:
     many_faces: bool = False
     swap_passes: int = 1               # 2 = swap again in crop space: measured only +0.01 likeness
     mask_mode: str = "face"            # face = follows the real jawline (106 landmarks) | box = square crop
-    face_mask_expand: float = 0.05     # push the face mask past the jaw edge (fraction of face height)
+    face_mask_expand: float = 0.08     # push the face mask past the jaw edge (fraction of face height)
     chin_extend: float = 0.04          # also cover below the jaw: under the chin, neck beard
     swap_zoom: float = 0.9             # < 1 repaints more chin/jaw around the face (less detail)
-    edge_detail: float = 1.0           # keep real skin/beard texture in the mask edge (no blurry halo)
+    edge_detail: float = 0.4           # real skin texture in the mask edge (no blurry halo); higher
+                                       # shows more of the real beard outside the jaw
     mouth_keep: str = "inner"          # off | inner (real teeth + tongue) | lips (real lips too)
     # detection / tracking (side views: lower threshold, a few hold frames)
     det_size: int = 640

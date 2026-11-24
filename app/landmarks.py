@@ -8,6 +8,7 @@ from .onnx_utils import create_session, input_dtype
 
 # 2d106det contour (jaw) points are indices 0-32; the rest are brows, eyes, nose and mouth.
 CONTOUR = list(range(33))
+FEATHER_OUTSIDE = True     # soft mask edge outside the jawline (see outline_mask)
 # Mouth (verified by drawing the numbered points): outer lip line and inner lip line (the opening).
 LIPS_OUTER = [52, 64, 63, 71, 67, 68, 61, 58, 59, 53, 56, 55]
 LIPS_INNER = [65, 66, 62, 70, 69, 57, 60, 54]
@@ -86,6 +87,15 @@ def outline_mask(outline, M, size, blur=0.3):
     """Rasterise a frame-space outline into an aligned crop (affine M, size x size), feathered."""
     poly = outline @ M[:, :2].T + M[:, 2]
     k = size * 0.5 * blur * 0.25
+    if k > 0.5 and FEATHER_OUTSIDE:
+        # Put the soft edge OUTSIDE the jaw: grow the sides and chin by 2 sigma before blurring,
+        # so the mask is still ~1 at the real jawline and fades over neck/background. With the
+        # feather centred on the jaw, the real beard showed through as a second jawline.
+        c = poly.mean(axis=0)
+        d = poly - c
+        r = np.linalg.norm(d, axis=1, keepdims=True).clip(1e-3)
+        lower = d[:, 1:2] > -0.15 * r                 # sides and chin; the forehead stays put (hair)
+        poly = (poly + np.where(lower, d / r * (2.0 * k), 0.0)).astype(np.float32)
     if k > 2:
         # a wide feather is a smooth ramp: draw and blur at quarter size, then scale up (same
         # result, a fraction of the cost of a ~100 px kernel at 512)
