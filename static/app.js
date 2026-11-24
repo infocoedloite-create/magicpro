@@ -36,12 +36,16 @@ function applySettings(s) {
 }
 
 /* ---------------- browser webcam -> GPU -> browser ---------------- */
-// Frames allowed in flight scale with the measured round trip, so a far-away GPU still gets a
-// full frame rate: in-flight = round trip x fps + 1 (e.g. 200 ms at 30 fps -> 7).
-const bs = { running: false, stream: null, ws: null, sendId: 0, recvId: 0, sent: new Map(), rtt: 0, rttAvg: 0, busy: false, cap: null, capCtx: null, outCtx: null, timer: null };
+// Pacing, so a distant GPU gets a full frame rate without a queue building up:
+//  * frames in flight = base round trip x fps + 1, where the base is the LOWEST recent round trip
+//    (queueing inflates the average, and steering by it would feed the queue it measures)
+//  * nothing is sent while the socket still holds an unsent frame, so the upload paces itself
+const bs = { running: false, stream: null, ws: null, sendId: 0, recvId: 0, sent: new Map(), rtt: 0, rtts: [], busy: false, cap: null, capCtx: null, outCtx: null, timer: null };
+function baseRtt() { return bs.rtts.length ? Math.min(...bs.rtts) : 0; }
 function maxInFlight() {
-  if (!bs.rttAvg) return 3;
-  return Math.max(2, Math.min(8, Math.ceil((bs.rttAvg * (state?.settings.fps || 30)) / 1000) + 1));
+  const base = baseRtt();
+  if (!base) return 2;
+  return Math.max(2, Math.min(6, Math.ceil((base * (state?.settings.fps || 30)) / 1000) + 1));
 }
 
 async function listBrowserCams() {
@@ -82,7 +86,8 @@ async function startBrowser() {
     const t = bs.sent.get(id);
     if (t) {
       bs.rtt = performance.now() - t;
-      bs.rttAvg = bs.rttAvg ? bs.rttAvg * 0.9 + bs.rtt * 0.1 : bs.rtt;
+      bs.rtts.push(bs.rtt);
+      if (bs.rtts.length > 90) bs.rtts.shift();   // about the last 3 seconds
     }
     for (const k of bs.sent.keys()) if (k <= id) bs.sent.delete(k);
     if (id <= bs.recvId) return;   // an older frame finished after a newer one: never step back
@@ -106,7 +111,7 @@ async function startBrowser() {
 
 async function pump() {
   const ws = bs.ws;
-  if (!bs.running || bs.busy || !ws || ws.readyState !== 1 || ws.bufferedAmount > 4e6) return;
+  if (!bs.running || bs.busy || !ws || ws.readyState !== 1 || ws.bufferedAmount > 0) return;
   if (bs.sendId - bs.recvId >= maxInFlight()) {
     const oldest = bs.sent.values().next().value;
     if (!oldest || performance.now() - oldest < 1500) return;
@@ -135,7 +140,7 @@ function stopBrowser() {
   bs.stream?.getTracks().forEach((t) => t.stop());
   bs.stream = null;
   bs.rtt = 0;
-  bs.rttAvg = 0;
+  bs.rtts = [];
 }
 
 /* ---------------- library ---------------- */
