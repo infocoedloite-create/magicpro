@@ -76,13 +76,20 @@ class Signer:
 
 # ---------------- Google OIDC ----------------
 class Google:
+    """Two modes, chosen by whether a client secret is configured:
+    * code flow (secret set): the code is exchanged at Google's token endpoint;
+    * secret-free (no secret, or the 'not-configured' placeholder): Google posts the ID token back
+      (response_type=id_token, response_mode=form_post) and its signature is checked by Google's
+      tokeninfo endpoint. Needs only the public client id, so no secret is ever handled."""
     AUTH = os.environ.get("GOOGLE_AUTH_URL", "https://accounts.google.com/o/oauth2/v2/auth")
     TOKEN = os.environ.get("GOOGLE_TOKEN_URL", "https://oauth2.googleapis.com/token")
+    TOKENINFO = os.environ.get("GOOGLE_TOKENINFO_URL", "https://oauth2.googleapis.com/tokeninfo")
     ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 
     def __init__(self, client_id: str, client_secret: str, redirect_uri: str, transport=None):
         self.client_id, self.client_secret, self.redirect_uri = client_id, client_secret, redirect_uri
         self.transport = transport          # tests pass an httpx.MockTransport
+        self.secretless = not client_secret or client_secret.strip() in ("not-configured", "")
 
     def start(self) -> tuple[str, dict]:
         """-> (URL to send the browser to, state to keep in a short signed cookie)"""
@@ -90,7 +97,29 @@ class Google:
         q = {"client_id": self.client_id, "redirect_uri": self.redirect_uri, "response_type": "code",
              "scope": "openid email profile", "state": st["state"], "nonce": st["nonce"],
              "prompt": "select_account"}
+        if self.secretless:
+            q.update(response_type="id_token", response_mode="form_post")
         return f"{self.AUTH}?{urlencode(q)}", st
+
+    async def finish_id_token(self, id_token: str, nonce: str) -> dict:
+        """Secret-free mode: Google's tokeninfo endpoint verifies the ID token's signature and
+        expiry; issuer, audience, nonce and e-mail verification are checked here."""
+        if not id_token:
+            raise ValueError("Google sent no ID token.")
+        async with httpx.AsyncClient(timeout=15, transport=self.transport) as c:
+            r = await c.get(self.TOKENINFO, params={"id_token": id_token})
+        if r.status_code != 200:
+            raise ValueError("Google did not accept the ID token.")
+        return self._check(r.json(), nonce)
+
+    def _check(self, claims: dict, nonce: str) -> dict:
+        if claims.get("iss") not in self.ISSUERS or claims.get("aud") != self.client_id:
+            raise ValueError("ID token is not for this site.")
+        if float(claims.get("exp", 0)) < time.time() or not hmac.compare_digest(str(claims.get("nonce", "")), nonce):
+            raise ValueError("ID token expired or replayed.")
+        if not claims.get("email") or claims.get("email_verified") not in (True, "true"):
+            raise ValueError("Your Google account's e-mail address is not verified.")
+        return {"sub": str(claims["sub"]), "email": claims["email"].lower(), "name": claims.get("name") or claims["email"]}
 
     async def finish(self, code: str, nonce: str) -> dict:
         """Exchange the code; check the ID token's claims. -> {sub, email, name}.
@@ -107,10 +136,4 @@ class Google:
             claims = json.loads(b64u_dec(idt.split(".")[1]))
         except (IndexError, ValueError) as e:
             raise ValueError("Google sent no usable ID token.") from e
-        if claims.get("iss") not in self.ISSUERS or claims.get("aud") != self.client_id:
-            raise ValueError("ID token is not for this site.")
-        if float(claims.get("exp", 0)) < time.time() or not hmac.compare_digest(str(claims.get("nonce", "")), nonce):
-            raise ValueError("ID token expired or replayed.")
-        if not claims.get("email") or claims.get("email_verified") not in (True, "true"):
-            raise ValueError("Your Google account's e-mail address is not verified.")
-        return {"sub": str(claims["sub"]), "email": claims["email"].lower(), "name": claims.get("name") or claims["email"]}
+        return self._check(claims, nonce)

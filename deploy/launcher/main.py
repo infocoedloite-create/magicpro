@@ -182,8 +182,11 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
             raise HTTPException(503, "Sign-in is not set up yet.")
         url, st = gg.start()
         r = RedirectResponse(url, 303)
+        # secret-free sign-in: Google POSTs back cross-site, which a SameSite=Lax cookie wouldn't
+        # survive; this cookie is short-lived, HttpOnly, Secure and only valid under /auth
+        same_site = "none" if getattr(gg, "secretless", False) and S.secure_cookies else "lax"
         r.set_cookie(OAUTH_COOKIE, oauth_state.dumps({**st, "next": safe_next(next)}, 600), max_age=600,
-                     httponly=True, secure=S.secure_cookies, samesite="lax", path="/auth")
+                     httponly=True, secure=S.secure_cookies, samesite=same_site, path="/auth")
         return r
 
     @app.get("/auth/callback")
@@ -195,6 +198,23 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
             who = await gg.finish(code, st["nonce"])
         except ValueError:
             return RedirectResponse("/?signin=failed", 303)
+        return await signed_in(who, st)
+
+    @app.post("/auth/callback")
+    async def callback_post(request: Request):
+        """Secret-free sign-in: Google posts id_token + state here (response_mode=form_post)."""
+        from urllib.parse import parse_qs
+        form = {k: v[0] for k, v in parse_qs((await request.body()).decode("utf-8", "replace")).items()}
+        st = oauth_state.loads(request.cookies.get(OAUTH_COOKIE))
+        if form.get("error") or not st or not secrets.compare_digest(st.get("state", ""), form.get("state", "")):
+            return RedirectResponse("/?signin=failed", 303)
+        try:
+            who = await gg.finish_id_token(form.get("id_token", ""), st["nonce"])
+        except ValueError:
+            return RedirectResponse("/?signin=failed", 303)
+        return await signed_in(who, st)
+
+    async def signed_in(who, st):
         nxt = st.get("next") or "/app"
         lim = await run_in_threadpool(db.get_limits)
         # signups closed: only existing users, owners, and people arriving with a usable invite code

@@ -271,6 +271,48 @@ def test_node_endpoints():
     assert c.post("/api/pool/tick").status_code == 403
 
 
+def test_secretless_signin():
+    """No client secret configured: Google posts the ID token back (form_post) and tokeninfo
+    verifies it. Forged, replayed, foreign and state-mismatched sign-ins are all refused."""
+    seen = {}
+
+    def tokeninfo(request: httpx.Request):
+        tok = request.url.params.get("id_token")
+        if tok == "forged":
+            return httpx.Response(400, json={"error": "invalid_token"})
+        claims = {"iss": "https://accounts.google.com", "aud": seen.get("aud", CLIENT_ID), "exp": str(int(time.time()) + 600),
+                  "email_verified": "true", "nonce": seen.get("nonce"), **seen["who"]}
+        return httpx.Response(200, json=claims)
+
+    google = webauth.Google(CLIENT_ID, "not-configured", f"{SITE}/auth/callback", transport=httpx.MockTransport(tokeninfo))
+    rp = paymod.Razorpay("rzp_test_abc", "rsecret", "whsecret", mode="test", transport=httpx.MockTransport(fr.handler))
+    pool = P.Pool(FakeVast(time.time), P.Config(secret="poolsecret", image="", launcher_url=SITE), log=lambda *_: None)
+    settings = main.Settings(site_url=SITE, session_secret=SECRET, google_client_id=CLIENT_ID, google_client_secret="not-configured",
+                             admin_emails={"admin@example.com"})
+    app = main.create_app(settings, storemod.MemoryStore(), pool, google, rp)
+    assert google.secretless
+
+    def attempt(token, nonce_ok=True, state_ok=True, aud=CLIENT_ID):
+        c = TestClient(app, base_url=SITE)
+        r = c.get("/login?next=/app", follow_redirects=False)
+        q = parse_qs(urlparse(r.headers["location"]).query)
+        assert q["response_type"] == ["id_token"] and q["response_mode"] == ["form_post"]
+        assert "samesite=none" in r.headers["set-cookie"].lower() and "secure" in r.headers["set-cookie"].lower()
+        seen.update(who={"sub": "s1", "email": "Who@Example.com", "name": "Who"}, aud=aud,
+                    nonce=q["nonce"][0] if nonce_ok else "replayed")
+        state = q["state"][0] if state_ok else "WRONG"
+        r = c.post("/auth/callback", content=f"id_token={token}&state={state}",
+                   headers={"Content-Type": "application/x-www-form-urlencoded"}, follow_redirects=False)
+        return c, r.headers["location"]
+
+    c, loc = attempt("good")
+    assert loc == "/app" and c.get("/api/me").json()["email"] == "who@example.com"
+    assert attempt("good", state_ok=False)[1] == "/?signin=failed"
+    assert attempt("forged")[1] == "/?signin=failed"
+    assert attempt("good", nonce_ok=False)[1] == "/?signin=failed"
+    assert attempt("good", aud="someone-else")[1] == "/?signin=failed"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
