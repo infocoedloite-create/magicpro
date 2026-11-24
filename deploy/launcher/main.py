@@ -320,7 +320,7 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
         exp = now + max(1, int(min(caps)))
         gpu_base = n.beat["tunnel"].rstrip("/")
         await run_in_threadpool(db.create_session, {"sid": sid, "sub": u["sub"], "node": n.id, "gpu_base": gpu_base,
-                                                    "started": now, "exp": exp}, bool(lim["single_session"]))
+                                                    "started": time.time(), "exp": exp}, bool(lim["single_session"]))
         token = webauth.jwt_encode({
             "iss": "magicpro-web", "aud": "magicpro-gpu", "sub": u["sub"], "email": u["email"], "name": u["name"],
             "role": "admin" if is_admin(u) else "user", "sid": sid, "iat": now, "exp": exp, "bal": int(bal),

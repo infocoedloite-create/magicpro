@@ -18,6 +18,14 @@ ENABLED = bool(SECRET)
 WEB_URL = os.environ.get("MAGIC_WEB_URL", "https://magicpro.nacgenai.in/app")
 COOKIE = "mp_session"
 REPORT_EVERY = float(os.environ.get("MAGIC_USAGE_EVERY", "30"))
+# what the page shows for the website's stop reasons (docs/handoff-contract.md, usage reply "reason")
+STOP_REASONS = {
+    "balance": "Your hours are used up.",
+    "daily_limit": "You've used today's hours.",
+    "replaced": "You started the studio again in another tab or device, so this one was closed.",
+    "ended": "The GPU was turned off by an admin.",
+    "blocked": "Your account is paused. Please contact support.",
+}
 
 
 def _b64d(s):
@@ -78,6 +86,11 @@ class Sessions:
                     "claims": claims, "streams": 0, "total": 0.0, "last_tick": time.time(),
                     "last_frame": 0.0, "last_report": 0.0, "stop": None, "remaining": None}
             s["claims"] = claims
+            # every new stream asks the website afresh (the usage loop reports within a second): an
+            # earlier answer, e.g. "replaced" by a Start that was then abandoned, must not end this one
+            # before the website has had its say. Unconditional: when the page reconnects at once, the
+            # old stream's close may not have been counted yet.
+            s["stop"], s["last_report"] = None, 0.0
             s["streams"] += 1
             s["last_tick"] = time.time()
             return s
@@ -156,7 +169,9 @@ class Sessions:
             if "remaining" in ans:
                 s["remaining"] = float(ans["remaining"])
             if ans.get("stop") or (s["remaining"] is not None and s["remaining"] <= 0):
-                s["stop"] = "Your hours are used up."
+                s["stop"] = STOP_REASONS.get(ans.get("reason"), STOP_REASONS["balance"])
+            else:
+                s["stop"] = None        # each answer stands on its own: nothing sticks from an old one
         except Exception as e:  # noqa: BLE001  website unreachable: keep going until the token's exp
             print(f"[usage] report failed for {c['sid'][:8]}: {e}", flush=True)
 

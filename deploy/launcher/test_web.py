@@ -256,6 +256,33 @@ def test_start_token_and_usage():
     assert r.get("wait"), r                                                    # the only node was reported dead
 
 
+def test_single_session_abandoned_start():
+    """Start, Start again, but keep using the first studio tab (the second never connects): the
+    running stream must not be cut off for good. The newest Start that does connect still wins."""
+    t = [time.time()]
+    app, vast, pool = build()
+    app.state.store.clock = lambda: t[0]
+    c = sign_in(TestClient(app, base_url=SITE), "u1", "user@example.com")
+    app.state.store.credit("u1", 5 * 3600, "grant", "g1")
+    vast.add(7, "running", label="magicpro-pool:n7")
+    assert node_beat(c, 7, "n7", "https://n7.trycloudflare.com").status_code == 200
+    sid = lambda r: webauth.jwt_decode(r["url"].split("t=", 1)[1], SECRET)["sid"]  # noqa: E731
+    first = sid(c.post("/api/start").json())
+    assert usage(c, first, "u1", 5).json()["stop"] is False
+    second = sid(c.post("/api/start").json())                       # a newer Start: it is the active one now
+    r = usage(c, first, "u1", 10).json()
+    assert r["stop"] is True and r["reason"] == "replaced", r        # ... for its first 45 s
+    t[0] += 60                                                       # the newer Start never reached its GPU
+    r = usage(c, first, "u1", 15).json()
+    assert r["stop"] is False, r                                     # the stream that really runs keeps going
+    assert usage(c, first, "u1", 20).json()["stop"] is False
+    r = usage(c, second, "u1", 1).json()                             # the newer tab connects after all: it wins
+    assert r["stop"] is False, r
+    r = usage(c, first, "u1", 25).json()
+    assert r["stop"] is True and r["reason"] == "replaced", r
+    assert usage(c, second, "u1", 2).json()["stop"] is False
+
+
 def test_node_endpoints():
     app, vast, _ = build()
     c = TestClient(app, base_url=SITE)

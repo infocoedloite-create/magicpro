@@ -366,8 +366,13 @@ class Store:
     def get_session(self, sid):
         return self.b.run(lambda v: v.get("sessions", sid))
 
-    def charge_usage(self, sid, sub, total_seconds, streaming=True):
-        """Charge only the increase of the cumulative total. -> (charged, user, session)"""
+    def charge_usage(self, sid, sub, total_seconds, streaming=True, abandon_after=45.0):
+        """Charge only the increase of the cumulative total. -> (charged, user, session)
+
+        One live session per user: the newest Start that actually reaches its GPU wins. A newer
+        Start that never connected within `abandon_after` seconds (closed tab, or the user stayed
+        on the older studio tab) does not cut off the stream that is really running: the
+        reporting session becomes the active one again."""
         now = self.clock()
 
         def fn(v):
@@ -376,6 +381,13 @@ class Store:
                 raise StoreError("Unknown session.")
             if u is None:
                 raise StoreError("No such user.")
+            act_sid = u.get("active_sid")
+            if streaming and not s.get("ended") and act_sid and act_sid != sid:
+                a = v.get("sessions", act_sid)        # read before any write (Firestore transactions)
+                newer = a is not None and float(s.get("started") or 0) > float(a.get("started") or 0)
+                abandoned = a is not None and a.get("last_report") is None and now - float(a.get("started") or 0) > abandon_after
+                if a is None or a.get("ended") or newer or abandoned:
+                    u["active_sid"] = sid
             _settle(u, now)
             today = day_key(now)
             if u.get("day") != today:

@@ -43,7 +43,10 @@ class Web(http.server.BaseHTTPRequestHandler):
         rep["sig_ok"] = good
         REPORTS.append(rep)
         stop = STATE["stop_after"] is not None and len(REPORTS) >= STATE["stop_after"]
-        out = json.dumps({"ok": True, "remaining": 0 if stop else 3600, "stop": stop}).encode()
+        ans = {"ok": True, "remaining": 0 if stop and not STATE.get("reason") else 3600, "stop": stop}
+        if stop and STATE.get("reason"):
+            ans["reason"] = STATE["reason"]
+        out = json.dumps(ans).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -214,6 +217,16 @@ def main():
     check(end_msg is not None and "used up" in end_msg.get("reason", ""), f"website 'stop' ends the stream with a message ({end_msg})")
     check(code == 4402 and time.time() - t0 < 20, f"stream closed by the server ({code}) after {time.time() - t0:.0f} s")
     STATE["stop_after"] = None
+
+    # the website's reason reaches the page, and a stop does not stick to the session: when the
+    # website says ok again (a newer Start that was abandoned), the same session streams again
+    REPORTS.clear()
+    STATE.update(stop_after=1, reason="replaced")
+    got, end_msg, code = asyncio.run(stream(B, ta, 15, packets))
+    check(end_msg is not None and "another tab" in end_msg.get("reason", ""), f"'replaced' tells the user why ({end_msg})")
+    STATE.update(stop_after=None, reason=None)
+    got, end_msg, code = asyncio.run(stream(B, ta, 8, packets))
+    check(end_msg is None and got > 100, f"the same session streams again once the website says ok ({got} frames, end={end_msg})")
 
     short = token(a.secret, "carol", exp_in=8)
     got, end_msg, code = asyncio.run(stream(B, short, 20, packets))
