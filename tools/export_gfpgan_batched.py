@@ -92,9 +92,10 @@ def main():
                              sft_half=True)
     ckpt = torch.load(a.weights, map_location="cpu", weights_only=True)
     net.load_state_dict(ckpt.get("params_ema", ckpt), strict=True)
-    net = net.eval().cuda()
+    dev = "cuda" if torch.cuda.is_available() else "cpu"      # CPU-only torch works too (slower)
+    net = net.eval().to(dev)
 
-    x = torch.rand(3, 3, 512, 512, device="cuda") * 2 - 1
+    x = torch.rand(3, 3, 512, 512, device=dev) * 2 - 1
     with torch.no_grad():
         ref = torch.cat([Wrapper(net)(x[i:i + 1]) for i in range(3)])     # original layer, one face per call
         sg2.ModulatedConv2d.forward = batched_modulated_forward

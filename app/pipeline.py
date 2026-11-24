@@ -91,6 +91,7 @@ class Settings:
     enhancer: str = ""
     enhancer_blend: float = 0.8
     enhancer_fidelity: float = 0.7
+    skin_texture: float = 0.7          # natural pores and micro-contrast after the enhancer (0 = off)
     # preview / disclosure
     preview_width: int = 960
     preview_quality: int = 80
@@ -200,7 +201,7 @@ NEW_USER_SETTINGS = dict(
     input_source="browser", resolution="720p", fps=30, swapper="inswapper_128_fp16", enhancer="gfpgan_1.4",
     enhancer_blend=0.5, mask_mode="face", face_mask_expand=0.08, chin_extend=0.04, swap_zoom=0.9,
     swap_passes=1, mask_blur=0.3, edge_detail=0.4, mouth_keep="inner", smoothing=0.5, det_thresh=0.5,
-    track_thresh=0.3, hold_ms=600, disclosure_label=True, stream_bitrate_mbps=4.0)
+    track_thresh=0.3, hold_ms=600, disclosure_label=True, stream_bitrate_mbps=4.0, skin_texture=0.7)
 
 
 class Space:
@@ -640,7 +641,8 @@ class Engine:
         enhancer = self._get(self._enhancers, config.ENHANCERS, FaceEnhancer, s.enhancer)
         if enhancer is not None and faces:
             for f, o in zip(faces, outlines):
-                enhancer.enhance_into(frame, f.kps, s.enhancer_blend, s.mask_blur, s.enhancer_fidelity, outline=o)
+                enhancer.enhance_into(frame, f.kps, s.enhancer_blend, s.mask_blur, s.enhancer_fidelity, outline=o,
+                                      texture=max(0.0, min(1.0, s.skin_texture)))
         t3 = time.perf_counter()
 
         if s.disclosure_label:

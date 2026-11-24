@@ -57,6 +57,16 @@ WATCHDOG_TOKEN = hmac.new(auth.SECRET.encode(), b"watchdog", hashlib.sha256).hex
 
 
 @app.middleware("http")
+async def static_revalidate(request: Request, call_next):
+    """Studio files are checked with the server on every load (a cheap 304 when unchanged), so an
+    update reaches users on their next reload instead of whenever the browser's cache expires."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.middleware("http")
 async def require_session(request: Request, call_next):
     request.state.claims = None
     path = request.url.path

@@ -98,6 +98,7 @@ def main():
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--res", default="1080p")
     ap.add_argument("--enhancer", default="gfpgan_1.4")
+    ap.add_argument("--swapper", default="inswapper_128_fp16")
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--setup", action="store_true", help="upload --image as the source face and select it")
     a = ap.parse_args()
@@ -107,11 +108,11 @@ def main():
                                         a.base + "/api/library"], capture_output=True, text=True).stdout)
         api(a.base, "/api/settings", {"source_ids": [up["id"]]})
     api(a.base, "/api/settings", {"enhancer": a.enhancer, "resolution": a.res, "fps": a.fps,
-                                  "swapper": "inswapper_128_fp16", "swap_enabled": True})
+                                  "swapper": a.swapper, "swap_enabled": True})
     w, h = (1920, 1080) if a.res == "1080p" else (1280, 720)
     packets = make_clip(a.image, w, h, a.fps)
     print(f"clip {w}x{h}@{a.fps}: {len(packets)} packets, {sum(len(p) for _, p in packets) * 8 / 3 / 1e6:.1f} Mbit/s; "
-          f"enhancer={a.enhancer or 'off'}")
+          f"enhancer={a.enhancer or 'off'} swapper={a.swapper}")
 
     # warm-up: every worker process loads its models before anything is measured
     q = mp.Queue()
