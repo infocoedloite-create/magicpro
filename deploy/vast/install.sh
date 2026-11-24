@@ -26,6 +26,11 @@ environment=PROC_NAME="%(program_name)s"
 command=/opt/supervisor-scripts/magicpro.sh
 autostart=true
 autorestart=true
+startsecs=5
+stopasgroup=true
+killasgroup=true
+stopsignal=TERM
+stopwaitsecs=10
 stdout_logfile=/dev/stdout
 redirect_stderr=true
 stdout_logfile_maxbytes=0

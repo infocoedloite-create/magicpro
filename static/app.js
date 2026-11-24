@@ -77,7 +77,8 @@ async function startBrowser() {
     const t = bs.sent.get(id);
     if (t) bs.rtt = performance.now() - t;
     for (const k of bs.sent.keys()) if (k <= id) bs.sent.delete(k);
-    bs.recvId = Math.max(bs.recvId, id);
+    if (id <= bs.recvId) return;   // an older frame finished after a newer one: never step back
+    bs.recvId = id;
     const bmp = await createImageBitmap(new Blob([new Uint8Array(e.data, 4)], { type: "image/jpeg" }));
     bs.outCtx.drawImage(bmp, 0, 0, bs.cap.width, bs.cap.height);
     bmp.close();

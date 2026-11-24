@@ -126,7 +126,8 @@ async def stream(ws: WebSocket):
             if out is not None:
                 await ws.send_bytes(data[:4] + out)
 
-    tasks = [asyncio.create_task(receive()), asyncio.create_task(work())]
+    # two workers: while one frame is on the GPU, the other is being JPEG-decoded/encoded on the CPU
+    tasks = [asyncio.create_task(receive()), asyncio.create_task(work()), asyncio.create_task(work())]
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
     finally:
