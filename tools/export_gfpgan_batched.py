@@ -38,9 +38,15 @@ def stub_basicsr():
 
 
 def batched_modulated_forward(self, x, style):
-    """Same maths as StyleGAN2 ModulatedConv2d, without per-sample weights."""
+    """Same maths as StyleGAN2 ModulatedConv2d, without per-sample weights, and FP16-safe.
+
+    With demodulation the output is invariant to scaling the style vector, so each sample's style
+    is first divided by its largest magnitude. Every intermediate (x * s, s^2 sums) then stays
+    small enough for FP16; the original form overflows in TensorRT FP16 (flat brown output)."""
     b, c, _, _ = x.shape
     s = self.modulation(style)                       # (b, c_in)
+    if self.demodulate:
+        s = s / s.abs().amax(dim=1, keepdim=True).clamp_min(1e-4)
     x = x * s.view(b, c, 1, 1)
     if self.sample_mode == "upsample":
         x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
@@ -49,8 +55,8 @@ def batched_modulated_forward(self, x, style):
     w0 = self.weight[0]                              # (c_out, c_in, k, k)
     out = F.conv2d(x, w0, padding=self.padding)
     if self.demodulate:
-        # sum_{in,k,k} (w*s)^2 = sum_in s_in^2 * sum_{k,k} w^2
-        demod = torch.rsqrt(s.pow(2) @ w0.pow(2).sum([2, 3]).t() + self.eps)   # (b, c_out)
+        # sum_{in,k,k} (w*s)^2 = sum_in s_in^2 * sum_{k,k} w^2 ; eps is negligible after scaling
+        demod = torch.rsqrt(s.pow(2) @ w0.pow(2).sum([2, 3]).t() + 1e-6)   # (b, c_out)
         out = out * demod.view(b, self.out_channels, 1, 1)
     return out
 
@@ -97,6 +103,9 @@ def main():
 
     torch.onnx.export(Wrapper(net), x[:1], a.out, input_names=["input"], output_names=["output"],
                       dynamic_axes={"input": {0: "N"}, "output": {0: "N"}}, opset_version=17, dynamo=False)
+    # tells app/enhancer.py this file may run in TensorRT FP16 (style-normalised modulation;
+    # measured 47-50 dB PSNR against full-precision GFPGAN, 3.6 ms vs 7.6 ms per face)
+    Path(a.out).with_suffix(".json").write_text('{"tensorrt_fp16": true}\n')
     print("wrote", a.out)
 
 

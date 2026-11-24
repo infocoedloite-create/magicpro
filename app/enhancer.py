@@ -3,6 +3,7 @@
 If models/batched/<name>.onnx exists (GFPGAN: tools/export_gfpgan_batched.py), faces from all
 streams in this process are restored together in one GPU call through a Batcher.
 """
+import json
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,11 @@ class FaceEnhancer:
         self.name = self.path.stem
         use_trt = self.name.lower().startswith(TRT_FP16_OK)
         batched = self.path.parent.parent / "batched" / self.path.name
+        side = batched.with_suffix(".json")
+        if batched.exists() and side.exists():
+            # e.g. GFPGAN re-exported by tools/export_gfpgan_batched.py (FP16-safe, verified 47-50 dB
+            # PSNR against full precision): TensorRT FP16 is fine for that file
+            use_trt = bool(json.loads(side.read_text()).get("tensorrt_fp16", use_trt))
         if batched.exists():
             self.session = create_session(batched, use_trt=use_trt, trt_shapes={
                 "input": ((1, 3, 512, 512), (8, 3, 512, 512), (16, 3, 512, 512))})

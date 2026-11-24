@@ -8,6 +8,29 @@ from .onnx_utils import create_session, input_dtype
 
 # 2d106det contour (jaw) points are indices 0-32; the rest are brows, eyes, nose and mouth.
 CONTOUR = list(range(33))
+# Mouth (verified by drawing the numbered points): outer lip line and inner lip line (the opening).
+LIPS_OUTER = [52, 64, 63, 71, 67, 68, 61, 58, 59, 53, 56, 55]
+LIPS_INNER = [65, 66, 62, 70, 69, 57, 60, 54]
+
+
+def mouth_polygon(pts106, mode, scale=1.0):
+    """'inner' = the mouth opening (teeth, tongue); 'lips' = the whole lips. Frame coordinates.
+    Returns (polygon, feather sigma in frame pixels)."""
+    idx = LIPS_INNER if mode == "inner" else LIPS_OUTER
+    poly = pts106[idx]
+    c = poly.mean(axis=0)
+    width = float(np.linalg.norm(pts106[61] - pts106[52]))
+    grow = (1.15 if mode == "inner" else 1.08) * scale
+    return (c + (poly - c) * grow).astype(np.float32), width * (0.05 if mode == "inner" else 0.07)
+
+
+def polygon_mask(poly, M, size, sigma_frame):
+    """Frame-space polygon -> soft mask in an aligned crop (affine M, size x size)."""
+    p = poly @ M[:, :2].T + M[:, 2]
+    m = np.zeros((size, size), np.float32)
+    cv2.fillPoly(m, [np.round(p).astype(np.int32)], 1.0)
+    sigma = sigma_frame * float(np.sqrt(abs(np.linalg.det(M[:, :2]))))
+    return cv2.GaussianBlur(m, (0, 0), max(sigma, 0.6))
 
 
 class Landmarks106:
@@ -62,11 +85,19 @@ def face_outline(pts106, expand=0.06, forehead=0.35, chin=0.0):
 def outline_mask(outline, M, size, blur=0.3):
     """Rasterise a frame-space outline into an aligned crop (affine M, size x size), feathered."""
     poly = outline @ M[:, :2].T + M[:, 2]
-    m = np.zeros((size, size), np.float32)
-    cv2.fillPoly(m, [np.round(poly).astype(np.int32)], 1.0)
     k = size * 0.5 * blur * 0.25
-    if k > 0.5:
-        m = cv2.GaussianBlur(m, (0, 0), k)
+    if k > 2:
+        # a wide feather is a smooth ramp: draw and blur at quarter size, then scale up (same
+        # result, a fraction of the cost of a ~100 px kernel at 512)
+        q = size // 4
+        m = np.zeros((q, q), np.float32)
+        cv2.fillPoly(m, [np.round(poly / 4 * 16).astype(np.int32)], 1.0, lineType=cv2.LINE_AA, shift=4)
+        m = cv2.resize(cv2.GaussianBlur(m, (0, 0), k / 4), (size, size), interpolation=cv2.INTER_LINEAR)
+    else:
+        m = np.zeros((size, size), np.float32)
+        cv2.fillPoly(m, [np.round(poly * 16).astype(np.int32)], 1.0, lineType=cv2.LINE_AA, shift=4)
+        if k > 0.5:
+            m = cv2.GaussianBlur(m, (0, 0), k)
     # always fade the last few pixels of the crop so its square border never shows
     edge = max(2, size // 64)
     ramp = np.minimum(np.arange(size, dtype=np.float32) + 1, np.arange(size, dtype=np.float32)[::-1] + 1) / edge

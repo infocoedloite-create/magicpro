@@ -19,7 +19,7 @@ import numpy as np
 
 from . import batcher, codec, config
 from .blending import draw_label, mouth_mask, swap_mask
-from .landmarks import Landmarks106, face_outline
+from .landmarks import Landmarks106, face_outline, mouth_polygon
 from .enhancer import FaceEnhancer
 from .face import FaceDetector, FaceRecognizer, KpsSmoother
 from .library import FaceLibrary
@@ -48,11 +48,13 @@ class Settings:
     swap_enabled: bool = True
     swapper: str = ""
     many_faces: bool = False
-    swap_passes: int = 2               # 2 = swap again on the swapped face: stronger likeness
+    swap_passes: int = 1               # 2 = swap again in crop space: measured only +0.01 likeness
     mask_mode: str = "face"            # face = follows the real jawline (106 landmarks) | box = square crop
-    face_mask_expand: float = 0.08     # push the face mask past the jaw edge (fraction of face height)
-    chin_extend: float = 0.12          # also cover below the jaw: under the chin, neck beard
-    swap_zoom: float = 0.85            # < 1 repaints more chin/jaw around the face
+    face_mask_expand: float = 0.05     # push the face mask past the jaw edge (fraction of face height)
+    chin_extend: float = 0.04          # also cover below the jaw: under the chin, neck beard
+    swap_zoom: float = 0.9             # < 1 repaints more chin/jaw around the face (less detail)
+    edge_detail: float = 1.0           # keep real skin/beard texture in the mask edge (no blurry halo)
+    mouth_keep: str = "inner"          # off | inner (real teeth + tongue) | lips (real lips too)
     # detection / tracking (side views: lower threshold, a few hold frames)
     det_size: int = 640
     det_thresh: float = 0.35
@@ -501,18 +503,27 @@ class Engine:
         faces = track.smoother(faces, s.smoothing)
         t1 = time.perf_counter()
 
-        # face-shaped masks that follow each real jawline (measured on the frame before swapping)
-        outlines = [None] * len(faces)
+        # face-shaped masks that follow each real jawline, and the real mouth, from 106 landmarks
+        # measured on the frame before swapping
+        mouth_mode = s.mouth_keep if s.mouth_keep in ("inner", "lips") else ("lips" if s.mouth_mask else "off")
+        outlines, mouths = [None] * len(faces), [None] * len(faces)
         lm = self.landmarks if s.mask_mode == "face" else None
         if lm is not None and faces:
-            outlines = []
+            outlines, mouths, all_pts = [], [], []
             for i, f in enumerate(faces):
-                o = face_outline(lm.detect(frame, f.bbox), expand=s.face_mask_expand, chin=s.chin_extend)
+                pts = lm.detect(frame, f.bbox)
                 prev = track.outlines[i] if i < len(track.outlines) else None
-                if prev is not None and prev.shape == o.shape and s.smoothing > 0:
-                    o = prev * (s.smoothing * 0.6) + o * (1 - s.smoothing * 0.6)   # steady mask edge
-                outlines.append(o)
-            track.outlines = outlines
+                if prev is not None and prev.shape == pts.shape and s.smoothing > 0:
+                    # steady jitter only; real movement (jaw dropping while talking) passes through
+                    motion = float(np.abs(pts - prev).mean()) / max(f.size, 1.0)
+                    a = min(s.smoothing, 0.6) * float(np.clip(1.0 - motion * 40.0, 0.0, 1.0))
+                    sm = prev * a + pts * (1.0 - a)
+                    sm[52:72] = pts[52:72]                  # lips never smoothed: lip sync stays exact
+                    pts = sm.astype(np.float32)
+                all_pts.append(pts)
+                outlines.append(face_outline(pts, expand=s.face_mask_expand, chin=s.chin_extend))
+                mouths.append(mouth_polygon(pts, mouth_mode, s.mouth_size) if mouth_mode != "off" else None)
+            track.outlines = all_pts
 
         latent = swapper.latent(emb)
         size = swapper.output_size(boost)
@@ -520,10 +531,10 @@ class Engine:
                          s.mask_left, round(s.mouth_size, 2) if s.mouth_mask else 0.0)
         keep = (1.0 - mouth_mask(size, round(s.mouth_size, 2))) if s.mouth_mask else None
         color = max(s.color_match, preset_color)
-        for _ in range(max(1, min(3, s.swap_passes))):
-            for f, o in zip(faces, outlines):
-                swapper.swap_into(frame, f.kps, latent, mask, color, boost, outline=o,
-                                  outline_blur=s.mask_blur, keep=keep, zoom=s.swap_zoom)
+        for f, o, mp in zip(faces, outlines, mouths):
+            swapper.swap_into(frame, f.kps, latent, mask, color, boost, outline=o,
+                              outline_blur=s.mask_blur, keep=keep, zoom=s.swap_zoom,
+                              keep_poly=mp, edge_detail=s.edge_detail, passes=max(1, min(3, s.swap_passes)))
         t2 = time.perf_counter()
 
         enhancer = self._get(self._enhancers, config.ENHANCERS, FaceEnhancer, s.enhancer)

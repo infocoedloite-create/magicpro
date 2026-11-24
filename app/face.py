@@ -139,9 +139,15 @@ class KpsSmoother:
                 if d < best_d:
                     best, best_d = p, d
             if best is not None:
-                motion = float(np.abs(f.kps - best).mean()) / max(f.size, 1.0)
-                a = strength * float(np.clip(1.0 - motion * 25.0, 0.0, 1.0))
-                f.kps = best * a + f.kps * (1.0 - a)
+                # Steady the head (eyes + nose) only. The mouth corners keep their real per-frame
+                # movement, shifted by the same head correction, so talking is never smoothed
+                # away and the swap stays locked to the lips.
+                upper_new, upper_old = f.kps[:3], best[:3]
+                motion = float(np.abs(upper_new - upper_old).mean()) / max(f.size, 1.0)
+                a = min(strength, 0.8) * float(np.clip(1.0 - motion * 25.0, 0.0, 1.0))
+                upper = upper_old * a + upper_new * (1.0 - a)
+                shift = (upper - upper_new).mean(axis=0)
+                f.kps = np.concatenate([upper, f.kps[3:] + shift]).astype(np.float32)
             new_prev.append(f.kps.copy())
             out.append(f)
         self.prev = new_prev

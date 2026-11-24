@@ -12,6 +12,7 @@ normalize: 0_1 (insightface default) | -1_1
 use_emap:  project the ArcFace embedding through the model's emap initialiser
 """
 import json
+import os
 from pathlib import Path
 
 import cv2
@@ -19,7 +20,10 @@ import numpy as np
 
 from .align import estimate_affine, template, warp_face
 from .batcher import Batcher
-from .landmarks import outline_mask
+from .landmarks import outline_mask, polygon_mask
+
+PASS_SMOOTH = float(os.environ.get("MAGIC_PASS_SMOOTH", "0.5"))   # sigma per 128 px, input of extra passes
+DEMOSAIC = float(os.environ.get("MAGIC_DEMOSAIC", "0.3"))         # sigma per 128 px, after pixel boost
 from .blending import color_match, paste_back
 from .onnx_utils import create_session, input_dtype
 
@@ -139,7 +143,7 @@ class FaceSwapper:
         return self.size * boost
 
     def swap_into(self, frame, kps, latent, mask, color_strength=0.0, boost=1, outline=None,
-                  outline_blur=0.3, keep=None, zoom=1.0):
+                  outline_blur=0.3, keep=None, zoom=1.0, keep_poly=None, edge_detail=0.0, passes=1):
         """boost > 1 = pixel boost: align the face at size*boost, split it into boost x boost
         interleaved sub-images of the model's native size, swap each and re-interleave. Gives a
         real 256/512 swap from a 128 model (mask must be output_size(boost) square).
@@ -158,17 +162,31 @@ class FaceSwapper:
         M = estimate_affine(kps, tmpl)
         if outline is not None:
             mask = outline_mask(outline, M, size, outline_blur)
-            if keep is not None:
+            if keep_poly is not None:           # real mouth from landmarks, soft-edged
+                mask = mask * (1.0 - polygon_mask(keep_poly[0], M, size, keep_poly[1]))
+            elif keep is not None:
                 mask = mask * keep
         crop = warp_face(frame, M, size)
-        if boost == 1:
-            out = self._infer(crop, latent)
-        else:
-            out = np.empty((size, size, 3), np.float32)
-            cells = [(i, j) for i in range(boost) for j in range(boost)]
-            results = self._infer_many([np.ascontiguousarray(crop[i::boost, j::boost]) for i, j in cells], latent)
-            for (i, j), r in zip(cells, results):
-                out[i::boost, j::boost] = r
+        out = self._swap_crop(crop, latent, boost)
+        for _ in range(max(1, passes) - 1):
+            # extra passes re-swap the swapped crop directly in crop space (one paste at the end,
+            # no double resampling). The model's own fine grid artifacts are smoothed out of its
+            # input first, otherwise feeding it its own output amplifies them into blocks.
+            src = cv2.GaussianBlur(out, (0, 0), PASS_SMOOTH * boost)
+            out = self._swap_crop(np.clip(src + 0.5, 0, 255).astype(np.uint8), latent, boost)
         if color_strength > 0:
             out = color_match(out, crop, mask, color_strength)
-        paste_back(frame, out, M, mask)
+        paste_back(frame, out, M, mask, detail=edge_detail)
+
+    def _swap_crop(self, crop, latent, boost):
+        if boost == 1:
+            return self._infer(crop, latent)
+        size = crop.shape[0]
+        out = np.empty((size, size, 3), np.float32)
+        cells = [(i, j) for i in range(boost) for j in range(boost)]
+        results = self._infer_many([np.ascontiguousarray(crop[i::boost, j::boost]) for i, j in cells], latent)
+        for (i, j), r in zip(cells, results):
+            out[i::boost, j::boost] = r
+        # the interleaved sub-swaps never line up exactly: a very light blur (under one source
+        # pixel) removes the checkerboard ("mosaic") it leaves in fine texture like beard
+        return cv2.GaussianBlur(out, (0, 0), DEMOSAIC * boost)
