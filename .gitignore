@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+# models are large and licensed separately: fetched by setup.ps1 or copied in by hand
+models/
+# uploaded faces and local settings stay on this machine
+library/
+settings.json
+# locally installed agent skills
+.agents/
+.claude/
+skills-lock.json

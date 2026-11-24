@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en" data-radius="sharp">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Magic Pro · Live Face Swap</title>
+  <meta name="description" content="Live webcam face swap control panel with InSwapper models, face enhancer and virtual camera output.">
+  <meta name="theme-color" content="#0e0f11">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a class="skip" href="#controls">Skip to controls</a>
+
+  <header class="top">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>Magic Pro</div>
+    <div class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="status-text">Idle</span></div>
+    <div class="top-actions">
+      <a class="btn ghost" href="/video.mjpg?full=1" target="_blank" rel="noopener">Open full-res feed</a>
+      <button class="btn primary" id="toggle" type="button">Start camera</button>
+    </div>
+  </header>
+
+  <div class="banner" id="setup-banner" hidden>
+    Detection models are missing. Run <code>setup.ps1</code>, then restart the server.
+  </div>
+
+  <main class="layout">
+    <section class="stage" aria-label="Live output">
+      <div class="screen" id="screen">
+        <img id="preview" alt="Live face swap output" src="/video.mjpg">
+        <button class="btn icon fs" id="fullscreen" type="button" aria-label="Full screen preview">⤢</button>
+      </div>
+      <dl class="meters" aria-label="Performance">
+        <div><dt>FPS</dt><dd id="m-fps">0</dd></div>
+        <div><dt>Latency</dt><dd id="m-lat">0 ms</dd></div>
+        <div><dt>Detect</dt><dd id="m-det">0 ms</dd></div>
+        <div><dt>Swap</dt><dd id="m-swap">0 ms</dd></div>
+        <div><dt>Enhance</dt><dd id="m-enh">0 ms</dd></div>
+        <div><dt>Faces</dt><dd id="m-faces">0</dd></div>
+      </dl>
+      <p class="facts" id="facts"></p>
+      <p class="error" id="error" role="alert" hidden></p>
+    </section>
+
+    <aside class="panel" id="controls" aria-label="Controls">
+      <section class="group" aria-labelledby="h-lib">
+        <div class="group-head">
+          <h2 id="h-lib">Face library</h2>
+          <span class="hint">Click to use · Ctrl-click to blend photos of one person</span>
+        </div>
+        <div class="grid" id="library"></div>
+        <form class="upload" id="upload">
+          <label class="drop" id="drop">
+            <input type="file" id="file" accept="image/*" multiple>
+            <span><strong>Add photos</strong> or drop them here. Front-facing and well lit works best.</span>
+          </label>
+          <label class="field"><span>Name</span><input type="text" id="up-name" placeholder="Optional" maxlength="60"></label>
+          <label class="check"><input type="checkbox" id="consent"><span>I have this person's consent to use their face</span></label>
+          <button class="btn primary wide" type="submit" id="up-btn">Upload to library</button>
+          <p class="msg" id="up-msg" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <section class="group" aria-labelledby="h-swap">
+        <div class="group-head"><h2 id="h-swap">Swap</h2></div>
+        <label class="field"><span>Swap model</span><select data-key="swapper" id="sel-swapper"></select></label>
+        <label class="switch"><input type="checkbox" data-key="swap_enabled"><span>Swap on</span></label>
+        <label class="switch"><input type="checkbox" data-key="many_faces"><span>Swap every face in frame</span></label>
+        <label class="range"><span>Detector threshold <output></output></span><input type="range" data-key="det_thresh" min="0.15" max="0.8" step="0.05"></label>
+        <label class="field"><span>Detector size</span>
+          <select data-key="det_size"><option value="320">320 · fastest</option><option value="480">480</option><option value="640">640 · best for side views</option></select></label>
+        <label class="range"><span>Landmark smoothing <output></output></span><input type="range" data-key="smoothing" min="0" max="0.9" step="0.05"></label>
+        <label class="range"><span>Hold face when lost (frames) <output></output></span><input type="range" data-key="hold_frames" min="0" max="15" step="1"></label>
+      </section>
+
+      <section class="group" aria-labelledby="h-q">
+        <div class="group-head"><h2 id="h-q">Quality</h2></div>
+        <label class="field"><span>Face enhancer</span><select data-key="enhancer" id="sel-enhancer"></select></label>
+        <label class="range"><span>Enhancer strength <output></output></span><input type="range" data-key="enhancer_blend" min="0" max="1" step="0.05"></label>
+        <label class="range"><span>Mask feather <output></output></span><input type="range" data-key="mask_blur" min="0" max="1" step="0.05"></label>
+        <div class="pair">
+          <label class="range"><span>Trim top % <output></output></span><input type="range" data-key="mask_top" min="0" max="40" step="1"></label>
+          <label class="range"><span>Trim bottom % <output></output></span><input type="range" data-key="mask_bottom" min="0" max="40" step="1"></label>
+          <label class="range"><span>Trim left % <output></output></span><input type="range" data-key="mask_left" min="0" max="40" step="1"></label>
+          <label class="range"><span>Trim right % <output></output></span><input type="range" data-key="mask_right" min="0" max="40" step="1"></label>
+        </div>
+        <label class="switch"><input type="checkbox" data-key="mouth_mask"><span>Keep real mouth (teeth and tongue)</span></label>
+        <label class="range"><span>Mouth area <output></output></span><input type="range" data-key="mouth_size" min="0.5" max="1.8" step="0.05"></label>
+        <label class="range"><span>Skin tone match <output></output></span><input type="range" data-key="color_match" min="0" max="1" step="0.05"></label>
+      </section>
+
+      <section class="group" aria-labelledby="h-cam">
+        <div class="group-head"><h2 id="h-cam">Camera and output</h2></div>
+        <div class="row">
+          <label class="field grow"><span>Camera</span><select data-key="camera" id="sel-camera"></select></label>
+          <button class="btn ghost" type="button" id="scan">Find cameras</button>
+        </div>
+        <div class="pair">
+          <label class="field"><span>Resolution</span>
+            <select data-key="resolution"><option value="720p">720p · 1280×720</option><option value="1080p">1080p · 1920×1080</option></select></label>
+          <label class="field"><span>Frame rate</span>
+            <select data-key="fps"><option value="30">30 fps</option><option value="60">60 fps</option></select></label>
+        </div>
+        <label class="field"><span>Capture backend</span>
+          <select data-key="camera_backend"><option value="dshow">DirectShow</option><option value="msmf">Media Foundation</option><option value="any">Auto</option></select></label>
+        <label class="switch"><input type="checkbox" data-key="mirror"><span>Mirror image</span></label>
+        <label class="switch"><input type="checkbox" data-key="virtual_cam"><span>Send to virtual camera (OBS, Zoom, browsers)</span></label>
+        <label class="switch"><input type="checkbox" data-key="disclosure_label"><span>Show "AI face swap" label on output</span></label>
+        <label class="range"><span>Preview JPEG quality <output></output></span><input type="range" data-key="preview_quality" min="40" max="95" step="5"></label>
+      </section>
+    </aside>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
