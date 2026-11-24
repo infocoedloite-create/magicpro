@@ -73,6 +73,7 @@ body[data-hosted="1"]:not([data-admin="1"]) .gpu-admin { display: none !importan
 .browser-only { display: flex; flex-direction: column; gap: 14px; }
 p.hint { margin: 0; }
 .screen .fs { position: absolute; right: 12px; top: 12px; background: rgba(0, 0, 0, .55); border-color: transparent; }
+.screen .pip { position: absolute; right: 64px; top: 12px; background: rgba(0, 0, 0, .55); border-color: transparent; }
 .screen:fullscreen { border: 0; border-radius: 0; }
 
 .meters { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; margin: 12px 0 0; background: var(--line); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }

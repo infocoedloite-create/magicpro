@@ -513,6 +513,20 @@ $("#preset-best").addEventListener("click", async () => {
   state.settings = await post("/api/settings", BEST_QUALITY);
   applySettings(state.settings);
 });
+/* Picture in picture: the swapped video alone in a new tab (static/output.html), fitted to the
+   tab, no controls. The tab takes the live canvas stream straight from this page: no second
+   connection, no extra delay. */
+let outStream = null;
+window.magicOutputSource = () => {
+  if (source() === "server") return { kind: "url", url: "/video.mjpg?full=1" };
+  outStream = outStream || $("#out").captureStream(60);
+  return { kind: "stream", stream: outStream };
+};
+$("#pip").addEventListener("click", () => {
+  const w = window.open("/static/output.html", "magicpro-output");
+  if (!w) showError("Your browser blocked the new tab. Allow pop-ups for this site and try again.");
+});
+
 $("#fullscreen").addEventListener("click", () => {
   if (document.fullscreenElement) document.exitFullscreen();
   else $("#screen").requestFullscreen();
