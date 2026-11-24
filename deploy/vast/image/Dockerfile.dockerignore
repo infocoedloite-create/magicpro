@@ -1,0 +1,7 @@
+.git
+.claude
+.venv
+**/__pycache__
+library
+settings.json
+deploy/launcher

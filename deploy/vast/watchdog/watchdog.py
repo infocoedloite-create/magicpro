@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Idle watchdog for the Magic Pro GPU instance (runs under supervisor next to `magicpro`).
+"""Node watchdog for a Magic Pro GPU instance (runs under supervisor next to `magicpro`).
 
 Stops this Vast.ai instance (GPU billing stops; storage is still billed) when:
   * grace:     nobody has streamed for GRACE seconds (default 600). A user returning cancels it.
   * dead-man:  nobody has streamed AND the launcher has not been in contact for DEADMAN seconds
-               (default 900). This holds even with GRACE=0 (grace off, launcher-managed), so a
-               bug anywhere else can never leave the GPU billing all night.
+               (default 900). This holds even with GRACE=0, so a bug anywhere else can never
+               leave the GPU billing all night.
   * request:   someone pressed "Stop GPU now" (the app writes STATE_DIR/stop-request).
 
 "Streaming" comes from the app: GET /api/gpu/status -> active_users (socket open AND heartbeat
 fresh), falling back to /api/stats -> browser_clients on an older app. If the app does not
 answer, nobody can be streaming, so that counts as idle too.
+
+Pool mode (MAGIC_LAUNCHER_URL and MAGIC_NODE_KEY set): every HEARTBEAT seconds the node tells
+the launcher its tunnel URL, streams, load/budget and health, signed with MAGIC_NODE_KEY. A
+successful reply is "launcher contact" for the dead-man rule. A reply with keep=true (users were
+just sent here, or the pool wants this node warm) resets the idle clock like a stream would.
+Just before stopping, the node reports stopping=true so the launcher stops routing to it.
 
 Maintenance hold: `touch STATE_DIR/hold` keeps the GPU on for HOLD_MAX seconds after the file's
 mtime (default 4 h), e.g. while benchmarking over SSH. Delete the file to release it.
@@ -18,6 +24,8 @@ mtime (default 4 h), e.g. while benchmarking over SSH. Delete the file to releas
 DRY_RUN=1 (the default) only logs "would stop". Set MAGIC_WATCHDOG_DRY_RUN=0 to stop for real.
 Standard library only, so it runs on the system python3.
 """
+import hashlib
+import hmac
 import json
 import os
 import signal
@@ -33,15 +41,21 @@ def env(name, default):
 
 
 APP = env("MAGIC_APP_URL", "http://127.0.0.1:17860")
+PORTAL = env("MAGIC_PORTAL_URL", "http://localhost:11111")
+EXTERNAL_PORT = env("MAGIC_EXTERNAL_PORT", "10100")
 STATE_DIR = Path(env("MAGIC_GPU_STATE_DIR", "/tmp/magicpro-gpu"))
 GRACE = float(env("MAGIC_IDLE_GRACE", "600"))          # 0 = off (dead-man still applies)
 DEADMAN = float(env("MAGIC_DEADMAN", "900"))
 HOLD_MAX = float(env("MAGIC_HOLD_MAX", str(4 * 3600)))
 POLL = float(env("MAGIC_WATCHDOG_POLL", "5"))
+HEARTBEAT = float(env("MAGIC_NODE_HEARTBEAT", "10"))
+KEEP_FOR = 30.0                                          # a keep=true reply holds this long
 DRY_RUN = env("MAGIC_WATCHDOG_DRY_RUN", "1") != "0"
 VAST_URL = env("VAST_URL", "https://console.vast.ai").rstrip("/")
 INSTANCE_ID = env("CONTAINER_ID", "")
 API_KEY = env("CONTAINER_API_KEY", "")                  # instance-scoped key Vast puts in the container
+LAUNCHER = env("MAGIC_LAUNCHER_URL", "").rstrip("/")
+NODE_KEY = env("MAGIC_NODE_KEY", "")
 
 
 def log(msg):
@@ -54,19 +68,52 @@ def get_json(url, timeout=3):
 
 
 def read_app():
-    """(active_users, control_contact_age_s or None, reachable)"""
+    """-> (status dict, reachable). status always has active_users."""
     try:
-        s = get_json(f"{APP}/api/gpu/status")
-        return int(s.get("active_users", 0)), s.get("control_contact_age_s"), True
+        return get_json(f"{APP}/api/gpu/status"), True
     except urllib.error.HTTPError as e:
         if e.code != 404:
-            return 0, None, False
+            return {"active_users": 0}, False
     except (OSError, ValueError):
-        return 0, None, False
+        return {"active_users": 0}, False
     try:   # app without the gpucontrol module
-        return int(get_json(f"{APP}/api/stats").get("browser_clients", 0)), None, True
+        return {"active_users": int(get_json(f"{APP}/api/stats").get("browser_clients", 0))}, True
     except (OSError, ValueError):
-        return 0, None, False
+        return {"active_users": 0}, False
+
+
+def read_tunnel():
+    try:
+        for t in get_json(f"{PORTAL}/get-all-quick-tunnels", timeout=5):
+            if str(t.get("targetUrl", "")).rstrip("/").endswith(f":{EXTERNAL_PORT}"):
+                return t.get("tunnelUrl")
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def sign(key, node_id, ts, body):
+    return hmac.new(key.encode(), f"{node_id}|{ts}|{hashlib.sha256(body).hexdigest()}".encode(),
+                    hashlib.sha256).hexdigest()
+
+
+def send_heartbeat(beat):
+    """-> launcher reply dict, or None when it could not be reached / refused us."""
+    if not (LAUNCHER and NODE_KEY and INSTANCE_ID):
+        return None
+    body = json.dumps(beat, separators=(",", ":")).encode()
+    ts = str(int(time.time()))
+    req = urllib.request.Request(f"{LAUNCHER}/api/node/heartbeat", data=body, method="POST", headers={
+        "Content-Type": "application/json", "X-Node-Id": INSTANCE_ID, "X-Node-Time": ts,
+        "X-Node-Sig": sign(NODE_KEY, INSTANCE_ID, ts, body)})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        log(f"launcher refused heartbeat: {e.code}")
+    except (OSError, ValueError) as e:
+        log(f"launcher unreachable: {e}")
+    return None
 
 
 def stop_instance(reason):
@@ -116,15 +163,14 @@ class Watchdog:
         self.idle_since = now          # a fresh boot gets a full grace period to be used
         self.last_contact = now        # boot counts as contact (the launcher just started us)
         self.stopping_since = None
-        self.last_users = None
         self.last_log_state = None
 
-    def tick(self, users, contact_age, stop_requested, hold):
+    def tick(self, users, contact_age, stop_requested, hold, keep=False):
         """Returns (reason to stop or None, status dict). Pure apart from the clock."""
         now = self.clock()
         if contact_age is not None:
             self.last_contact = max(self.last_contact, now - float(contact_age))
-        if users > 0:
+        if users > 0 or keep:
             self.idle_since = None
         elif self.idle_since is None:
             self.idle_since = now
@@ -134,15 +180,15 @@ class Watchdog:
         reason = None
         if stop_requested:
             reason = "Stop GPU now pressed"
-        elif hold > 0:
+        elif hold > 0 or users > 0 or keep:
             reason = None
-        elif users == 0 and GRACE > 0 and idle >= GRACE:
+        elif GRACE > 0 and idle >= GRACE:
             reason = f"nobody streaming for {idle:.0f}s (grace {GRACE:.0f}s)"
-        elif users == 0 and idle >= DEADMAN and silent >= DEADMAN:
+        elif idle >= DEADMAN and silent >= DEADMAN:
             reason = f"dead-man: no streams and no launcher contact for {min(idle, silent):.0f}s"
 
         stop_at = None
-        if users == 0 and hold <= 0:
+        if users == 0 and not keep and hold <= 0:
             cands = [max(self.idle_since, self.last_contact) + DEADMAN]
             if GRACE > 0:
                 cands.append(self.idle_since + GRACE)
@@ -150,7 +196,7 @@ class Watchdog:
         status = {
             "updated": now, "dry_run": DRY_RUN, "users": users, "idle_s": round(idle),
             "grace_s": GRACE, "deadman_s": DEADMAN, "contact_age_s": round(silent),
-            "hold_s": round(hold), "stop_in_s": round(max(0.0, stop_at - now)) if stop_at else None,
+            "hold_s": round(hold), "keep": keep, "stop_in_s": round(max(0.0, stop_at - now)) if stop_at else None,
             "stopping": self.stopping_since is not None,
         }
         return reason, status
@@ -158,21 +204,42 @@ class Watchdog:
 
 def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    pool = bool(LAUNCHER and NODE_KEY)
     log(f"watchdog up: instance={INSTANCE_ID or '?'} grace={GRACE:.0f}s deadman={DEADMAN:.0f}s "
-        f"dry_run={DRY_RUN} key={'yes' if API_KEY else 'NO'} app={APP}")
+        f"dry_run={DRY_RUN} key={'yes' if API_KEY else 'NO'} app={APP} "
+        f"launcher={LAUNCHER if pool else 'none (single-GPU mode)'}")
     wd = Watchdog()
     req_file = STATE_DIR / "stop-request"
-    next_attempt = 0.0
+    next_attempt = next_beat = next_tunnel = 0.0
+    keep_until, contact, tunnel = 0.0, None, None
     while True:
-        users, contact_age, reachable = read_app()
-        requested = req_file.exists()
+        app, reachable = read_app()
+        users = int(app.get("active_users", 0))
         now = time.time()
-        reason, status = wd.tick(users, contact_age, requested, hold_left(now))
+        if now >= next_tunnel:
+            tunnel, next_tunnel = read_tunnel(), now + (30 if tunnel else 5)
+        requested = req_file.exists()
+        reason, status = wd.tick(users, (now - contact) if contact else None, requested,
+                                 hold_left(now), keep=now < keep_until)
         status["app_reachable"] = reachable
-        summary = (users, reachable, reason is not None, status["hold_s"] > 0)
+        status["stopping"] = status["stopping"] or bool(reason)
+        if pool:
+            status.update(launcher=LAUNCHER, node=INSTANCE_ID)
+        beat = {"tunnel": tunnel, "users": users, "load": app.get("load", 0), "budget": app.get("budget"),
+                "stream_cost": app.get("stream_cost"), "healthy": reachable and app.get("healthy", True),
+                "error": app.get("error", ""), "fps": app.get("fps"), "dry_run": DRY_RUN,
+                "idle_s": status["idle_s"], "stop_in_s": status["stop_in_s"], "stopping": bool(reason)}
+        if pool and (now >= next_beat or reason):
+            next_beat = now + HEARTBEAT
+            reply = send_heartbeat(beat)
+            if reply is not None:
+                contact = time.time()
+                if reply.get("keep"):
+                    keep_until = contact + KEEP_FOR
+        summary = (users, reachable, reason is not None, status["hold_s"] > 0, status["keep"])
         if summary != wd.last_log_state:
             log(f"users={users} app={'up' if reachable else 'DOWN'} idle={status['idle_s']}s "
-                f"stop_in={status['stop_in_s']}s hold={status['hold_s']}s")
+                f"stop_in={status['stop_in_s']}s hold={status['hold_s']}s keep={status['keep']}")
             wd.last_log_state = summary
         if reason and now >= next_attempt:
             if stop_instance(reason):
@@ -182,6 +249,7 @@ def main():
                 if DRY_RUN:                             # pretend it happened: restart the clocks
                     wd.idle_since = now if users == 0 else None
                     wd.last_contact = now
+                    wd.stopping_since = None
             else:
                 next_attempt = now + 60                 # retry a failed stop once a minute
         write_state(status)

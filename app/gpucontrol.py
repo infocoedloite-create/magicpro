@@ -1,27 +1,46 @@
-"""GPU on/off bookkeeping for the instance watchdog and the always-on launcher.
+"""GPU on/off and pool bookkeeping for the node watchdog (deploy/vast/watchdog) and launcher.
 
 The app is the ground truth for "is anyone streaming". A user counts as present only while
-their WebSocket is open AND their page has sent a heartbeat in the last HEARTBEAT_TIMEOUT
-seconds, so a crashed tab or dropped Wi-Fi stops counting within 15 s even if TCP lingers.
-Nothing here stops the GPU itself: the watchdog (deploy/vast/watchdog) reads /api/gpu/status
-and does that, and picks up "Stop GPU now" requests from a file in STATE_DIR.
+their WebSocket is open AND their page sent a heartbeat in the last HEARTBEAT_TIMEOUT seconds,
+so a crashed tab or dropped Wi-Fi stops counting within 15 s even if TCP lingers. Heartbeats
+are kept as small files so every worker process (MAGIC_WORKERS > 1) sees all of them.
+
+Capacity is in cost units: this node has MAGIC_GPU_BUDGET units (default 4.0) and each stream
+costs stream_cost(settings). Defaults come from load tests on an RTX PRO 6000 at 1080p:
+GFPGAN 1080p30 = 1.0 (4 users), plain 1080p30 = 0.5 (8 users), 60 fps doubles. Override any
+part with MAGIC_COST_MODEL='{"swap": 0.5, "enhancer": 0.5, ...}' after new load tests.
+Nothing here stops the GPU: the watchdog reads /api/gpu/status and does that.
 """
 import json
 import os
+import re
+import tempfile
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException
 
 HEARTBEAT_TIMEOUT = float(os.environ.get("MAGIC_HEARTBEAT_TIMEOUT", "15"))
-STATE_DIR = Path(os.environ.get("MAGIC_GPU_STATE_DIR", "/tmp/magicpro-gpu"))
+STATE_DIR = Path(os.environ.get("MAGIC_GPU_STATE_DIR", Path(tempfile.gettempdir()) / "magicpro-gpu"))
+BEATS = STATE_DIR / "beats"
 PORTAL = os.environ.get("MAGIC_PORTAL_URL", "http://localhost:11111")
 EXTERNAL_PORT = os.environ.get("MAGIC_EXTERNAL_PORT", "10100")
+BUDGET = float(os.environ.get("MAGIC_GPU_BUDGET", "4.0"))
+
+COST_MODEL = {
+    "swap": 0.5,          # detect + swap + video codec, one 1080p30 stream
+    "enhancer": 0.5,      # GFPGAN on top
+    "fps_ref": 30,        # cost scales with fps / fps_ref
+    "resolution": {"1080p": 1.0, "720p": 0.5},          # 720p is an estimate, not load-tested yet
+    "swapper": {"inswapper_512_live": 2.0, "inswapper_512": 5.0, "inswapper_studio": 8.0},  # x plain swap
+}
+try:
+    COST_MODEL.update(json.loads(os.environ.get("MAGIC_COST_MODEL", "{}")))
+except ValueError:
+    pass
 
 router = APIRouter(prefix="/api/gpu")
 _engine = None
-_beats: dict[str, tuple[float, bool]] = {}   # client id -> (last heartbeat, streaming)
-_control = {"last": 0.0}                     # last contact from the launcher
 
 
 def attach(app, engine):
@@ -30,13 +49,42 @@ def attach(app, engine):
     app.include_router(router)
 
 
+def stream_cost(s: dict) -> float:
+    m = COST_MODEL
+    swap = m["swap"] * float(m["swapper"].get(s.get("swapper") or "", 1.0))
+    enh = m["enhancer"] if s.get("enhancer") else 0.0
+    fps = float(s.get("fps") or m["fps_ref"]) / float(m["fps_ref"])
+    res = float(m["resolution"].get(s.get("resolution") or "1080p", 1.0))
+    return round((swap + enh) * fps * res, 3)
+
+
+def _beats(exclude: str = "") -> int:
+    """Fresh 'streaming' heartbeats from all worker processes."""
+    now, n = time.time(), 0
+    for f in BEATS.glob("*.json") if BEATS.exists() else []:
+        try:
+            age = now - f.stat().st_mtime
+            if age > HEARTBEAT_TIMEOUT * 4:
+                f.unlink(missing_ok=True)
+                continue
+            if age <= HEARTBEAT_TIMEOUT and f.stem != exclude and json.loads(f.read_text()).get("streaming"):
+                n += 1
+        except (OSError, ValueError):
+            continue
+    return n
+
+
+def _sockets() -> int:
+    if not _engine:
+        return 0
+    try:
+        return int(_engine.cluster_stats().get("browser_clients", 0))
+    except Exception:  # noqa: BLE001  older engine without cluster stats
+        return int(getattr(_engine, "browser_clients", 0))
+
+
 def _streaming(exclude: str = "") -> int:
-    now = time.time()
-    for cid in [c for c, (t, _) in _beats.items() if now - t > HEARTBEAT_TIMEOUT * 4]:
-        _beats.pop(cid, None)
-    beating = sum(1 for c, (t, s) in _beats.items() if s and c != exclude and now - t <= HEARTBEAT_TIMEOUT)
-    sockets = _engine.browser_clients if _engine else 0
-    return min(sockets, beating)
+    return min(_sockets(), _beats(exclude))
 
 
 def _watchdog() -> dict:
@@ -46,46 +94,56 @@ def _watchdog() -> dict:
         return {}
 
 
-def status(request: Request | None = None) -> dict:
-    if request is not None and request.headers.get("x-magic-control"):
-        _control["last"] = time.time()
-    last = _control["last"]
+def status() -> dict:
+    users = _streaming()
+    try:
+        settings = _engine.settings_dict() if _engine else {}
+        stats = _engine.cluster_stats() if _engine else {}
+    except Exception:  # noqa: BLE001
+        settings, stats = {}, {}
+    cost = stream_cost(settings)
     return {
-        "active_users": _streaming(),
-        "sockets": _engine.browser_clients if _engine else 0,
-        "heartbeats": sum(1 for t, s in _beats.values() if s and time.time() - t <= HEARTBEAT_TIMEOUT),
-        "control_contact_age_s": round(time.time() - last, 1) if last else None,
+        "active_users": users,
+        "sockets": _sockets(),
+        "heartbeats": _beats(),
+        "stream_cost": cost,
+        "load": round(users * cost, 3),
+        "budget": BUDGET,
+        "healthy": stats.get("status") != "error",
+        "error": stats.get("error", ""),
+        "fps": stats.get("fps"),
         "ready": True,
         "watchdog": _watchdog(),
     }
 
 
 @router.get("/status")
-def gpu_status(request: Request):
-    return status(request)
+def gpu_status():
+    return status()
 
 
 @router.post("/heartbeat")
 def heartbeat(body: dict = Body(...)):
-    cid = str(body.get("cid", ""))[:64]
+    cid = re.sub(r"[^A-Za-z0-9_-]", "", str(body.get("cid", "")))[:64]
     if not cid:
         raise HTTPException(400, "cid required")
-    _beats[cid] = (time.time(), bool(body.get("streaming")))
+    BEATS.mkdir(parents=True, exist_ok=True)
+    tmp = BEATS / f".{cid}.tmp"
+    tmp.write_text(json.dumps({"streaming": bool(body.get("streaming"))}))
+    tmp.replace(BEATS / f"{cid}.json")
     return status()
 
 
 @router.post("/stop")
-def stop_now(request: Request, body: dict = Body(default={})):
+def stop_now(body: dict = Body(default={})):
     """'Stop GPU now'. Refused while someone else is streaming unless force is set."""
-    if request.headers.get("x-magic-control"):
-        _control["last"] = time.time()
-    cid = str(body.get("cid", ""))[:64]
+    cid = re.sub(r"[^A-Za-z0-9_-]", "", str(body.get("cid", "")))[:64]
     others = _streaming(exclude=cid)
     if others and not body.get("force"):
         raise HTTPException(409, f"{others} other {'person is' if others == 1 else 'people are'} still streaming.")
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     (STATE_DIR / "stop-request").write_text(json.dumps({"at": time.time(), "cid": cid}))
-    return {"ok": True, "message": "Stopping the GPU. It will be off in about a minute."}
+    return {"ok": True, "message": "Stopping this GPU. It will be off in about a minute."}
 
 
 @router.get("/tunnel")

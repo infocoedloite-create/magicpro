@@ -50,4 +50,15 @@ watchdog.GRACE = 600
 # Stop GPU now and the maintenance hold
 assert "Stop GPU now" in run([(1, 0, None, True, 0)])[0]
 assert run([(5000, 0, None, False, 100)]) == [None]
+
+# pool: keep=true from the launcher (users on their way / warm node) holds like a stream
+c = Clock(); wd = watchdog.Watchdog(clock=c)
+for _ in range(20):
+    c.t += 60
+    assert wd.tick(0, 1, False, 0, keep=True)[0] is None
+assert wd.tick(0, 1, False, 0)[0] is None   # keep ended: the grace starts now
+c.t += 599
+assert wd.tick(0, 1, False, 0)[0] is None
+c.t += 2
+assert "grace" in wd.tick(0, 1, False, 0)[0]
 print("watchdog rules: all ok")

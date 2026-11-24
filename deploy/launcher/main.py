@@ -1,41 +1,37 @@
-"""Magic Pro launcher: an always-on page (Cloud Run) that starts the Vast.ai GPU on demand.
+"""Magic Pro launcher: an always-on page (Cloud Run) in front of an autoscaled pool of Vast.ai GPUs.
 
-Flow: sign in -> Start camera -> the Vast instance is started -> this page polls until the app
-on the instance answers -> the browser is sent to the app's current HTTPS address (the
-Cloudflare quick tunnel, which changes on every restart) with ?autostart=1.
-Stopping is the instance watchdog's job (deploy/vast/watchdog); this page only adds a
-"Stop GPU now" button and a "Cancel start" when the stopped GPU was rented by someone else.
+Flow: sign in -> Start camera -> the launcher picks the ready GPU node with the most free
+capacity (starting or creating one if none is free) -> the browser goes to that node's current
+HTTPS address (its Cloudflare quick tunnel, reported by the node's heartbeat) with ?autostart=1.
+If a node dies mid-stream, the app page comes back here with ?reconnect=1 and gets another node.
+Nodes stop themselves when idle (deploy/vast/watchdog); see pool.py for the scaling rules.
 
-Environment:
-  VAST_API_KEY        Vast.ai API key (from Secret Manager)              required
-  LAUNCHER_PASSWORD   shared sign-in password (from Secret Manager)      required
-  VAST_INSTANCE_ID    instance to control                                required
-  APP_PORT            the app's Caddy (token-auth) container port        default 10100
-  VAST_URL            default https://console.vast.ai
+Secrets (Secret Manager): VAST_API_KEY, LAUNCHER_PASSWORD, POOL_SECRET.
+Settings (env): see pool.Config, plus LAUNCHER_URL (this service's https address).
 """
 import asyncio
 import hashlib
 import hmac
 import html
+import json
 import os
+import secrets
 import time
+from urllib.parse import quote
 
-import httpx
 from fastapi import Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-VAST_URL = os.environ.get("VAST_URL", "https://console.vast.ai").rstrip("/")
+import pool as poolmod
+
 API_KEY = os.environ.get("VAST_API_KEY", "")
 PASSWORD = os.environ.get("LAUNCHER_PASSWORD", "")
-INSTANCE_ID = os.environ.get("VAST_INSTANCE_ID", "")
-APP_PORT = os.environ.get("APP_PORT", "10100")
 SESSION_DAYS = 14
 COOKIE = "mp_launcher"
-UNAVAILABLE_AFTER = 75   # seconds a start may sit in "scheduling" before we say the GPU is taken
 
 _key = hashlib.sha256(f"magicpro-launcher|{PASSWORD}|{API_KEY}".encode()).digest()
-_started_at: dict[str, float] = {}
 _fails: dict[str, list[float]] = {}
+pool = poolmod.Pool(poolmod.Vast(API_KEY, os.environ.get("VAST_URL", "https://console.vast.ai")))
 app = FastAPI(title="Magic Pro launcher", docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -55,14 +51,18 @@ def _authed(request: Request) -> bool:
 def _require(request: Request):
     if not _authed(request):
         raise HTTPException(401, "Sign in first.")
+    if not pool.cfg.launcher_url:   # nodes we create need to know where to send heartbeats
+        pool.cfg.launcher_url = f"https://{request.url.netloc}"
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page(error: str = ""):
+def login_page(error: str = "", next: str = "/"):
     msg = f'<p class="err" role="alert">{html.escape(error)}</p>' if error else ""
+    nxt = html.escape(next if next.startswith("/") and not next.startswith("//") else "/")
     return PAGE.replace("{{BODY}}", f"""
 <form method="post" action="/login" class="card">
-  <h1>Magic Pro</h1><p class="muted">Sign in to start the GPU.</p>{msg}
+  <h1>Magic Pro</h1><p class="muted">Sign in to start a GPU.</p>{msg}
+  <input type="hidden" name="next" value="{nxt}">
   <label for="pw">Password</label>
   <input id="pw" name="password" type="password" autocomplete="current-password" required autofocus>
   <button class="btn primary" type="submit">Sign in</button>
@@ -70,7 +70,7 @@ def login_page(error: str = ""):
 
 
 @app.post("/login")
-async def login(request: Request, password: str = Form("")):
+async def login(request: Request, password: str = Form(""), next: str = Form("/")):
     ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "?").split(",")[0]
     recent = [t for t in _fails.get(ip, []) if time.time() - t < 600]
     if len(recent) >= 10:
@@ -78,10 +78,10 @@ async def login(request: Request, password: str = Form("")):
     if not PASSWORD or not hmac.compare_digest(password.encode(), PASSWORD.encode()):
         _fails[ip] = recent + [time.time()]
         await asyncio.sleep(1)
-        return RedirectResponse("/login?error=Wrong+password.", 303)
-    r = RedirectResponse("/", 303)
+        return RedirectResponse("/login?error=Wrong+password.&next=" + quote(next), 303)
+    r = RedirectResponse(next if next.startswith("/") and not next.startswith("//") else "/", 303)
     exp = int(time.time()) + SESSION_DAYS * 86400
-    r.set_cookie(COOKIE, _sign(exp), max_age=SESSION_DAYS * 86400, httponly=True, secure=True, samesite="strict")
+    r.set_cookie(COOKIE, _sign(exp), max_age=SESSION_DAYS * 86400, httponly=True, secure=True, samesite="lax")
     return r
 
 
@@ -92,150 +92,132 @@ def logout():
     return r
 
 
-# ---------------- Vast.ai + the app on the instance ----------------
-async def vast(method: str, path: str, json=None) -> dict:
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.request(method, f"{VAST_URL}/api/v0{path}", json=json,
-                            headers={"Authorization": f"Bearer {API_KEY}"})
+# ---------------- users ----------------
+def _node_url(n: poolmod.Node) -> str:
+    tunnel = n.beat["tunnel"].rstrip("/")
+    token = n.inst.get("jupyter_token", "")
+    return f"{tunnel}/?token={quote(token)}&autostart=1"
+
+
+@app.post("/api/assign")
+async def assign(request: Request, body: dict = Body(default={})):
+    """Give this browser a GPU node. {cid, exclude?} -> {url} or {wait: true, text}."""
+    _require(request)
+    cid = str(body.get("cid", ""))[:64] or secrets.token_hex(8)
+    exclude = {str(body["exclude"])} if body.get("exclude") else set()
+    if exclude:
+        for e in exclude:
+            pool.report_unreachable(e)
     try:
-        body = r.json()
-    except ValueError:
-        body = {"msg": r.text[:300]}
-    if r.status_code >= 400:
-        raise HTTPException(502, f"Vast.ai said {r.status_code}: {body.get('msg') or body.get('error') or body}")
-    return body
+        await pool.refresh()
+    except RuntimeError as e:
+        raise HTTPException(502, str(e)) from e
+    n = pool.assign(cid, exclude)
+    await pool.tick()                 # scale early when this user used up the last free capacity
+    if n:
+        return {"url": _node_url(n), "node": n.id}
+    s = pool.summary()
+    booting = [x for x in s["nodes"] if x["state"] == "booting"]
+    text = ("Starting GPU…" if booting else
+            pool.note if pool.note else "Looking for a free GPU…")
+    return {"wait": True, "text": text, "booting": len(booting), "note": pool.note}
 
 
-async def instance() -> dict:
-    d = await vast("GET", f"/instances/{INSTANCE_ID}/")
-    inst = d.get("instances", d)
-    if isinstance(inst, list):
-        inst = inst[0] if inst else {}
-    if not inst:
-        raise HTTPException(502, f"Vast.ai has no instance {INSTANCE_ID}.")
-    return inst
-
-
-def _direct(inst: dict) -> str | None:
+@app.get("/api/pool")
+async def pool_view(request: Request):
+    _require(request)
     try:
-        port = inst["ports"][f"{APP_PORT}/tcp"][0]["HostPort"]
-        return f"http://{inst['public_ipaddr'].strip()}:{port}"
-    except (KeyError, IndexError, TypeError, AttributeError):
-        return None
+        await pool.tick()
+    except RuntimeError:
+        pass
+    return pool.summary()
 
 
-async def app_call(inst: dict, method: str, path: str, json=None, timeout=4.0):
-    """Talk to the app through the instance's Caddy edge (token = the instance's jupyter_token)."""
-    base = _direct(inst)
-    if not base:
-        return None
-    async with httpx.AsyncClient(timeout=timeout) as c:
-        r = await c.request(method, base + path, json=json, headers={
-            "Authorization": f"Bearer {inst.get('jupyter_token', '')}", "X-Magic-Control": "1"})
-    return r
-
-
-def _phase(inst: dict, ready: bool) -> tuple[str, str]:
-    actual, intended = inst.get("actual_status") or "", inst.get("intended_status") or ""
-    msg = (inst.get("status_msg") or "").strip()
-    if ready:
-        return "ready", "GPU is on."
-    if intended == "stopped":
-        return ("stopping", "Stopping the GPU…") if actual == "running" else ("off", "GPU is off.")
-    if actual == "running":
-        return "loading", "GPU is on, loading the face swap models…"
-    started = _started_at.get(INSTANCE_ID)
-    waited = time.time() - started if started else 0
-    if (actual == "scheduling" or "schedul" in msg.lower()) and (not started or waited > UNAVAILABLE_AFTER):
-        return "unavailable", ("Our GPU was rented by someone else while it was stopped, so it cannot start "
-                               "right now. Vast will start it as soon as that machine frees up (the watchdog "
-                               "turns it off again if nobody streams), or press Cancel start.")
-    return "starting", "Starting GPU…"
-
-
-@app.get("/api/status")
-async def status(request: Request):
+@app.post("/api/pool/stop-all")
+async def stop_all(request: Request, body: dict = Body(default={})):
     _require(request)
-    inst = await instance()
-    ready, url, users, stop_in = False, None, None, None
-    if inst.get("actual_status") == "running" and inst.get("intended_status") != "stopped":
-        try:
-            r = await app_call(inst, "GET", "/api/gpu/status")
-            if r is not None and r.status_code == 200:
-                s = r.json()
-                users, stop_in = s.get("active_users"), (s.get("watchdog") or {}).get("stop_in_s")
-                t = await app_call(inst, "GET", "/api/gpu/tunnel")
-                if t is not None and t.status_code == 200 and t.json().get("url"):
-                    url = f"{t.json()['url'].rstrip('/')}/?token={inst.get('jupyter_token', '')}&autostart=1"
-                    ready = True
-        except (httpx.HTTPError, ValueError):
-            pass
-    phase, text = _phase(inst, ready)
-    if phase in ("ready", "off"):
-        _started_at.pop(INSTANCE_ID, None)
-    return {"phase": phase, "text": text, "url": url, "users": users, "stop_in_s": stop_in,
-            "gpu": inst.get("gpu_name"), "price_per_hour": round(float(inst.get("dph_total") or 0), 3),
-            "vast": {k: inst.get(k) for k in ("actual_status", "intended_status", "cur_state", "status_msg")}}
+    done = await pool.stop_all(force=bool(body.get("force")))
+    return {"stopped": done}
 
 
-@app.post("/api/start")
-async def start(request: Request):
+@app.post("/api/pool/adopt")
+async def adopt(request: Request, body: dict = Body(...)):
+    """Make an existing instance a pool node: labels it and returns its watchdog settings."""
     _require(request)
-    body = await vast("PUT", f"/instances/{INSTANCE_ID}/", {"state": "running"})
-    if body.get("success") is False:
-        msg = body.get("msg") or body.get("error") or "Vast.ai refused to start the instance."
-        return JSONResponse({"ok": False, "message": f"Could not start the GPU: {msg}"}, 409)
-    _started_at.setdefault(INSTANCE_ID, time.time())
-    return {"ok": True}
+    iid = str(body.get("instance_id", "")).strip()
+    if not iid.isdigit():
+        raise HTTPException(400, "instance_id must be a number")
+    nonce = secrets.token_hex(8)
+    await pool.vast.set_label(iid, f"{pool.cfg.label}:{nonce}")
+    await pool.refresh(force=True)
+    return {"instance_id": iid, "env": poolmod.env_lines(pool.cfg, nonce)}
 
 
-@app.post("/api/stop")
-async def stop(request: Request, body: dict = Body(default={})):
-    _require(request)
-    inst = await instance()
-    if not body.get("force") and inst.get("actual_status") == "running":
-        try:
-            r = await app_call(inst, "GET", "/api/gpu/status")
-            users = r.json().get("active_users", 0) if r is not None and r.status_code == 200 else 0
-        except (httpx.HTTPError, ValueError):
-            users = 0
-        if users:
-            return JSONResponse({"ok": False, "users": users,
-                                 "message": f"{users} {'person is' if users == 1 else 'people are'} still streaming."}, 409)
-    res = await vast("PUT", f"/instances/{INSTANCE_ID}/", {"state": "stopped"})
-    _started_at.pop(INSTANCE_ID, None)
-    if res.get("success") is False:
-        return JSONResponse({"ok": False, "message": res.get("msg") or "Vast.ai refused to stop it."}, 502)
-    return {"ok": True}
+# ---------------- nodes ----------------
+@app.post("/api/node/heartbeat")
+async def node_heartbeat(request: Request):
+    raw = await request.body()
+    node_id = request.headers.get("x-node-id", "")
+    try:
+        await pool.refresh()
+    except RuntimeError:
+        pass
+    n = pool.verify(node_id, request.headers.get("x-node-time", ""), request.headers.get("x-node-sig", ""), raw)
+    if n is None:
+        await pool.refresh(force=True)   # a node we have not listed yet (just created / adopted)
+        n = pool.verify(node_id, request.headers.get("x-node-time", ""), request.headers.get("x-node-sig", ""), raw)
+    if n is None:
+        raise HTTPException(403, "Unknown node or bad signature.")
+    try:
+        beat = json.loads(raw or b"{}")
+    except ValueError as e:
+        raise HTTPException(400, "bad json") from e
+    reply = pool.heartbeat(n, beat)
+    await pool.tick()                 # Cloud Run gives no CPU between requests: decide while we have it
+    return reply
+
+
+@app.post("/api/pool/tick")
+async def tick(request: Request):
+    """For an optional Cloud Scheduler job (only needed with POOL_MIN_WARM > 0)."""
+    want = hmac.new(pool.cfg.secret.encode(), b"tick", hashlib.sha256).hexdigest() if pool.cfg.secret else ""
+    if not want or not hmac.compare_digest(want, request.headers.get("x-tick-token", "")):
+        raise HTTPException(403, "bad tick token")
+    return {"actions": [list(a) for a in await pool.tick()]}
 
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": bool(API_KEY and PASSWORD and INSTANCE_ID)}
+    return {"ok": bool(API_KEY and PASSWORD and pool.cfg.secret)}
 
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     if not _authed(request):
-        return RedirectResponse("/login", 303)
+        return RedirectResponse("/login?next=" + quote(str(request.url.path) + ("?" + request.url.query if request.url.query else "")), 303)
     return PAGE.replace("{{BODY}}", HOME)
 
 
 HOME = """
 <main class="card" aria-live="polite">
   <h1>Magic Pro</h1>
-  <p id="state" class="state"><span class="dot"></span><span id="text">Checking the GPU…</span></p>
+  <p id="state" class="state"><span class="dot"></span><span id="text">Ready when you are.</span></p>
   <p id="detail" class="muted"></p>
   <p id="err" class="err" role="alert" hidden></p>
-  <div class="row">
-    <button class="btn primary" id="go" type="button" disabled>Start camera</button>
-    <button class="btn" id="stop" type="button" hidden>Stop GPU now</button>
-  </div>
+  <div class="row"><button class="btn primary" id="go" type="button">Start camera</button>
+    <button class="btn" id="cancel" type="button" hidden>Cancel</button></div>
+  <details id="gpus"><summary>GPUs</summary>
+    <table><thead><tr><th>GPU</th><th>State</th><th>Users</th><th>Load</th><th>$/h</th></tr></thead><tbody id="rows"></tbody></table>
+    <p id="pool-note" class="muted"></p>
+    <div class="row"><button class="btn" id="stop-all" type="button">Stop idle GPUs now</button></div>
+  </details>
   <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>
 </main>
 <script>
 const $ = (s) => document.querySelector(s);
-let want = false, last = null;
+const cid = sessionStorage.cid || (sessionStorage.cid = Math.random().toString(36).slice(2) + Date.now().toString(36));
+const qs = new URLSearchParams(location.search);
+let want = false, exclude = qs.get("exclude") || "", timer = null;
 async function call(path, opts) {
   const r = await fetch(path, opts);
   if (r.status === 401) { location.href = "/login"; throw new Error("signed out"); }
@@ -245,42 +227,40 @@ async function call(path, opts) {
 }
 const post = (p, d) => call(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(d || {}) });
 function err(m) { $("#err").hidden = !m; $("#err").textContent = m || ""; }
-function render(s) {
-  last = s;
-  $("#text").textContent = s.text;
-  $("#state").dataset.phase = s.phase;
-  const bits = [s.gpu, s.price_per_hour && `$${s.price_per_hour}/h while on`];
-  if (s.phase === "ready" && s.users != null) bits.push(`${s.users} streaming now`);
-  if (s.phase === "ready" && s.stop_in_s != null) bits.push(`turns off in ${Math.ceil(s.stop_in_s / 60)} min if nobody streams`);
-  $("#detail").textContent = bits.filter(Boolean).join(" · ");
-  const busy = ["starting", "loading", "stopping"].includes(s.phase);
-  const go = $("#go");
-  go.disabled = busy || s.phase === "stopping";
-  go.textContent = s.phase === "ready" ? "Open camera" : s.phase === "unavailable" ? "Keep waiting" : busy ? "Starting GPU…" : "Start camera";
-  $("#stop").hidden = !["ready", "loading", "starting", "unavailable"].includes(s.phase);
-  $("#stop").textContent = s.phase === "unavailable" || s.phase === "starting" ? "Cancel start" : "Stop GPU now";
-  if (want && s.phase === "ready" && s.url) location.href = s.url;
+function phase(p, text) { $("#state").dataset.phase = p; $("#text").textContent = text; }
+async function tryAssign() {
+  if (!want) return;
+  try {
+    const r = await post("/api/assign", { cid, exclude });
+    if (r.url) { phase("ready", "Connecting…"); location.href = r.url; return; }
+    phase("starting", r.text); $("#detail").textContent = r.note || "";
+  } catch (e) { err(e.message); }
+  timer = setTimeout(tryAssign, 3000);
 }
-async function poll() {
-  try { render(await call("/api/status")); err(""); } catch (e) { if (e.message !== "signed out") err(e.message); }
-  setTimeout(poll, last && ["starting", "loading", "stopping"].includes(last.phase) || want ? 3000 : 10000);
+function go() { want = true; err(""); $("#go").disabled = true; $("#cancel").hidden = false; phase("starting", "Finding a GPU…"); tryAssign(); }
+$("#go").addEventListener("click", go);
+$("#cancel").addEventListener("click", () => { want = false; clearTimeout(timer); $("#go").disabled = false; $("#cancel").hidden = true; phase("", "Cancelled. A GPU that was starting turns itself off again if nobody uses it."); });
+async function refreshPool() {
+  try {
+    const s = await call("/api/pool");
+    $("#rows").innerHTML = "";
+    for (const n of s.nodes) {
+      const tr = document.createElement("tr");
+      for (const v of [`${n.id}${n.gpu ? " · " + n.gpu : ""}`, n.state + (n.dry_run ? " (test)" : ""), n.users, `${n.load}/${n.budget}`, n.price_per_hour]) {
+        const td = document.createElement("td"); td.textContent = v; tr.appendChild(td);
+      }
+      $("#rows").appendChild(tr);
+    }
+    $("#pool-note").textContent = `Billing now: $${s.billing_per_hour}/h · limit ${s.limits.max_nodes} GPUs` + (s.note ? ` · ${s.note}` : "");
+  } catch { /* shown by the main flow */ }
 }
-$("#go").addEventListener("click", async () => {
-  want = true; err("");
-  if (last && last.phase === "ready" && last.url) { location.href = last.url; return; }
-  try { await post("/api/start"); render({ ...last, phase: "starting", text: "Starting GPU…" }); }
-  catch (e) { want = false; err(e.message); }
+$("#gpus").addEventListener("toggle", () => { if ($("#gpus").open) refreshPool(); });
+setInterval(() => { if ($("#gpus").open) refreshPool(); }, 5000);
+$("#stop-all").addEventListener("click", async () => {
+  if (!confirm("Stop every GPU nobody is streaming on?")) return;
+  try { const r = await post("/api/pool/stop-all"); $("#pool-note").textContent = `Stopping: ${r.stopped.join(", ") || "none"}`; } catch (e) { err(e.message); }
 });
-$("#stop").addEventListener("click", async () => {
-  want = false; err("");
-  try { await post("/api/stop"); }
-  catch (e) {
-    if (!(e.body && e.body.users) || !confirm(e.message + " Stop the GPU for everyone anyway?")) { err(e.message); return; }
-    try { await post("/api/stop", { force: true }); } catch (e2) { err(e2.message); return; }
-  }
-  render({ ...last, phase: "stopping", text: "Stopping the GPU…" });
-});
-poll();
+if (qs.has("reconnect")) { history.replaceState(null, "", "/"); phase("starting", "Your GPU stopped answering. Moving you to another one…"); go(); }
 </script>"""
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -289,15 +269,14 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 :root { --bg:#0f1113; --surface:#171a1d; --line:#2a2e33; --ink:#eceef0; --muted:#9aa1a9; --accent:#f2a93b; --live:#e5484d; --ok:#3fb950; color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; padding:16px; }
-.card { width:100%; max-width:420px; background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:28px; display:grid; gap:14px; }
+.card { width:100%; max-width:480px; background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:28px; display:grid; gap:14px; }
 h1 { margin:0; font-size:22px; }
 .muted { color:var(--muted); margin:0; font-size:14px; }
 .err { color:#ff8a8d; margin:0; font-size:14px; }
 .state { margin:0; display:flex; align-items:center; gap:10px; font-weight:600; }
 .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); flex:none; }
 [data-phase=ready] .dot { background:var(--ok); }
-[data-phase=starting] .dot, [data-phase=loading] .dot, [data-phase=stopping] .dot { background:var(--accent); animation:pulse 1s infinite alternate; }
-[data-phase=unavailable] .dot { background:var(--live); }
+[data-phase=starting] .dot { background:var(--accent); animation:pulse 1s infinite alternate; }
 @keyframes pulse { to { opacity:.3; } }
 .row { display:flex; gap:10px; flex-wrap:wrap; }
 .btn { min-height:44px; padding:0 18px; border-radius:10px; border:1px solid var(--line); background:#20242a; color:var(--ink); font:600 14px inherit; font-family:inherit; cursor:pointer; }
@@ -305,5 +284,10 @@ h1 { margin:0; font-size:22px; }
 .btn:disabled { opacity:.6; cursor:default; }
 label { font-size:13px; color:var(--muted); }
 input { min-height:44px; border-radius:10px; border:1px solid var(--line); background:#0f1113; color:var(--ink); padding:0 12px; font:inherit; }
+details { border-top:1px solid var(--line); padding-top:10px; display:grid; gap:10px; }
+summary { cursor:pointer; color:var(--muted); font-size:14px; }
+table { width:100%; border-collapse:collapse; font-size:13px; margin:8px 0; }
+th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); }
+th { color:var(--muted); font-weight:600; }
 .link { background:none; border:0; color:var(--muted); padding:0; cursor:pointer; font:inherit; font-size:13px; text-decoration:underline; }
 </style></head><body>{{BODY}}</body></html>"""

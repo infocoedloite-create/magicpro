@@ -150,7 +150,7 @@ async function startH264() {
     try { bs.decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: id, data: new Uint8Array(e.data, 6) })); }
     catch { decReady = false; ws.send('{"t":"kf"}'); }
   };
-  ws.onclose = () => { if (bs.running) { stopBrowser(); showError("The connection to the GPU server closed. Press Start camera to reconnect."); } };
+  ws.onclose = () => { if (bs.running) { stopBrowser(); showError("The connection to the GPU server closed. Press Start camera to reconnect."); streamLost(); } };
   await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = () => fail(new Error("Could not connect to the GPU server.")); });
 
   bs.running = true;
@@ -206,7 +206,7 @@ async function startJpeg(w, h) {
     bmp.close();
     pump();
   };
-  ws.onclose = () => { if (bs.running) { stopBrowser(); showError("The connection to the GPU server closed. Press Start camera to reconnect."); } };
+  ws.onclose = () => { if (bs.running) { stopBrowser(); showError("The connection to the GPU server closed. Press Start camera to reconnect."); streamLost(); } };
   await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = () => fail(new Error("Could not connect to the GPU server.")); });
 
   bs.running = true;
@@ -478,6 +478,7 @@ async function gpuBeat() {
   try {
     const s = await post("/api/gpu/heartbeat", { cid: gpuCid, streaming: isRunning(state) });
     const w = s.watchdog || {};
+    if (w.launcher) gpuPool = { launcher: w.launcher, node: w.node };
     const fresh = w.updated && Date.now() / 1000 - w.updated < 30;
     $("#gpu-stop").hidden = !fresh;
     const note = $("#gpu-note");
@@ -499,7 +500,25 @@ $("#gpu-stop").addEventListener("click", async () => {
     try { showError((await post("/api/gpu/stop", { cid: gpuCid, force: true })).message); } catch (e2) { showError(e2.message); }
   }
 });
-if (new URLSearchParams(location.search).has("autostart")) {
+// Pool: the node's watchdog tells the page its launcher (cached from heartbeats, since the node
+// may be gone when we need it). If the stream drops and this node no longer answers (GPU died,
+// stopped, tunnel gone), go back to the launcher, which hands out another node.
+const qp = new URLSearchParams(location.search);
+let gpuPool = null;   // {launcher, node}
+async function streamLost() {
+  if (!gpuPool || !/^https:\/\//.test(gpuPool.launcher || "")) return;
+  for (let i = 0; i < 2; i++) {
+    try {
+      const r = await fetch("/api/gpu/status", { signal: AbortSignal.timeout(3000), cache: "no-store" });
+      const s = await r.json();
+      if (r.ok && !(s.watchdog && s.watchdog.stopping)) return;     // node is fine: a network blip
+    } catch { /* unreachable */ }
+    await new Promise((ok) => setTimeout(ok, 1500));
+  }
+  showError("This GPU stopped answering. Moving you to another one…");
+  location.href = `${gpuPool.launcher.replace(/\/$/, "")}/?reconnect=1&exclude=${encodeURIComponent(gpuPool.node || "")}`;
+}
+if (qp.has("autostart")) {
   history.replaceState(null, "", location.pathname);
   const go = () => (state ? $("#toggle").click() : setTimeout(go, 300));
   setTimeout(go, 300);
