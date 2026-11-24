@@ -19,6 +19,7 @@ w() { if [ -n "${!1:-}" ]; then echo "$1=${!1}"; else echo "$1=\${$1:-$2}"; fi; 
   w MAGIC_APP_URL http://127.0.0.1:17860
   w MAGIC_LAUNCHER_URL ""
   w MAGIC_NODE_KEY ""
+  w MAGIC_TUNNEL_DIRECT 0
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 

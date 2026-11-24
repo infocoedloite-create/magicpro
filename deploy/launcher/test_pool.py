@@ -1,5 +1,5 @@
 """Pool autoscaler and launcher tests against a simulated Vast.ai (no network, no money).
-Run: python deploy/launcher/test_pool.py   (needs fastapi, httpx, python-multipart)"""
+Run: python deploy/launcher/test_pool.py   (website routes: test_web.py)"""
 import asyncio
 import json
 import os
@@ -241,43 +241,9 @@ async def scenario_stop_all():
     assert sorted(await pool.stop_all(force=True)) == ["1"]
 
 
-def http_flow():
-    """Launcher routes end to end: login, wait, signed node heartbeat, assignment URL."""
-    from fastapi.testclient import TestClient
-    import main
-    c = Clock()
-    v = FakeVast(c)
-    v.add(5, "running", label="magicpro-pool:abc")
-    c.t = time.time()
-    main.pool = P.Pool(v, P.Config(secret="s3cret", launcher_url="https://launch.example"), clock=time.time, log=lambda *_: None)
-    t = TestClient(main.app, base_url="https://testserver")
-    assert t.post("/api/assign", json={"cid": "u"}).status_code == 401
-    assert t.post("/login", data={"password": "pw"}, follow_redirects=False).status_code == 303
-    r = t.post("/api/assign", json={"cid": "u"}).json()
-    assert r.get("wait"), r                                  # running but never heartbeated: not ready
-    beat_body = json.dumps({"tunnel": "https://n5.trycloudflare.com", "users": 0, "load": 0, "budget": 4,
-                            "stream_cost": 1.0, "healthy": True}).encode()
-    ts = str(int(time.time()))
-    bad = t.post("/api/node/heartbeat", content=beat_body, headers={"X-Node-Id": "5", "X-Node-Time": ts, "X-Node-Sig": "00"})
-    assert bad.status_code == 403
-    sig = P.sign(P.node_key("s3cret", "abc"), "5", ts, beat_body)
-    ok = t.post("/api/node/heartbeat", content=beat_body, headers={"X-Node-Id": "5", "X-Node-Time": ts, "X-Node-Sig": sig})
-    assert ok.status_code == 200 and ok.json()["keep"] is False, ok.text
-    r = t.post("/api/assign", json={"cid": "u"}).json()
-    assert r["url"] == "https://n5.trycloudflare.com/?token=tok5&autostart=1", r
-    s = t.get("/api/pool").json()
-    assert s["nodes"][0]["state"] == "ready" and s["billing_per_hour"] == 1.0, s
-    assert "reconnect" in t.get("/?reconnect=1&exclude=5").text or True
-    r = t.post("/api/assign", json={"cid": "u", "exclude": "5"}).json()
-    assert r.get("wait"), r                                  # the only node was reported dead
-    a = t.post("/api/pool/adopt", json={"instance_id": "5"}).json()
-    assert "MAGIC_NODE_KEY=" in a["env"] and v.inst["5"]["label"].startswith("magicpro-pool:")
-
-
-for name, fn in list(globals().items()):
-    if name.startswith("scenario_"):
-        run(fn())
-        print("ok ", name)
-http_flow()
-print("ok  http_flow")
-print("pool: all ok")
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("scenario_"):
+            run(fn())
+            print("ok ", name)
+    print("pool: all ok")

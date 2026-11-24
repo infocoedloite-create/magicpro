@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Your account · {{ S.brand }}{% endblock %}
+{% block navlinks %}<a href="/app">Account</a>{% endblock %}
+{% block main %}
+<section class="page">
+  <div class="wrap">
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">Signed in as {{ user.email }}</p>
+        <h1 class="balance" id="balance">{{ user.balance_s|hms }}</h1>
+        <p class="muted">left to stream. Time counts only while your camera is live.</p>
+      </div>
+      <form method="post" action="/logout"><button class="btn ghost" type="submit">Sign out</button></form>
+    </div>
+
+    <div class="grid-2">
+      <div class="stack">
+        <div class="box">
+          <h2>Start streaming</h2>
+          <p class="muted">Opens your studio in this tab. Allow camera access when the browser asks.</p>
+          <p class="status-line" id="start-status" hidden><span class="pulse"></span><span id="start-text">Starting GPU…</span></p>
+          <p class="notice bad" id="start-error" role="alert" hidden></p>
+          <div class="actions"><button class="btn primary big" id="start" type="button" {% if user.balance_s <= 0 %}disabled{% endif %}>Start the studio</button>
+            <button class="btn ghost big" id="cancel" type="button" hidden>Cancel</button></div>
+          {% if user.balance_s <= 0 %}<p class="small muted" id="need-hours">Buy an hour pack or redeem a code to start.</p>{% endif %}
+        </div>
+
+        <div class="box">
+          <h2>Hour packs</h2>
+          {% if test_mode %}<p class="notice test">Test mode: payments use Razorpay's test cards and UPI ids. No real money moves.</p>{% endif %}
+          {% if pay_problem %}<p class="notice bad">{{ pay_problem }}</p>{% endif %}
+          <div class="pack-row">
+            {% for p in packs %}
+            <div class="pack">
+              <b>{{ p.label }}</b>
+              <span class="muted">{{ p.price_inr|inr }}</span>
+              <button class="btn {{ 'primary' if loop.index == 2 else 'ghost' }} wide buy" type="button" data-pack="{{ p.id }}" {% if pay_problem %}disabled{% endif %}>Buy {{ p.label }}</button>
+            </div>
+            {% endfor %}
+          </div>
+          <p class="notice" id="pay-msg" role="status" hidden></p>
+        </div>
+
+        <div class="box">
+          <h2>Invite code</h2>
+          <form class="form-row" id="redeem">
+            <label for="code">Code from your invite<input id="code" name="code" autocomplete="off" placeholder="AB12-CD34-EF56" required></label>
+            <button class="btn" type="submit">Add the hours</button>
+          </form>
+          <p class="notice" id="redeem-msg" role="status" hidden></p>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div class="box">
+          <h2>Streaming history</h2>
+          <div class="table-scroll"><table><thead><tr><th>Started</th><th>Streamed</th></tr></thead><tbody id="sessions"><tr><td colspan="2" class="muted">No sessions yet.</td></tr></tbody></table></div>
+        </div>
+        <div class="box">
+          <h2>Hours added</h2>
+          <div class="table-scroll"><table><thead><tr><th>Date</th><th>What</th><th>Hours</th></tr></thead><tbody id="ledger"><tr><td colspan="3" class="muted">Nothing yet.</td></tr></tbody></table></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="https://checkout.razorpay.com/v1/checkout.js" defer></script>
+<script src="/static/account.js" defer></script>
+{% endblock %}

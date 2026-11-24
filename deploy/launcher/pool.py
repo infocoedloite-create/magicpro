@@ -51,6 +51,7 @@ class Config:
     app_port: str = os.environ.get("APP_PORT", "10100")
     launcher_url: str = os.environ.get("LAUNCHER_URL", "")
     secret: str = os.environ.get("POOL_SECRET", "")
+    session_secret: str = os.environ.get("MAGIC_SESSION_SECRET", "")          # handoff contract; nodes verify tokens
     heartbeat_ttl: float = 45        # a node is gone after this long without a heartbeat
     reserve_ttl: float = 90          # an assigned user counts as load until their stream shows up
     wait_ttl: float = 30             # a waiting user counts as demand this long after their last poll
@@ -386,6 +387,8 @@ class Pool:
             "PORTAL_CONFIG": f"localhost:1111:11111:/:Instance Portal|localhost:{p}:17860:/:Magic Pro",
             "MAGIC_LAUNCHER_URL": self.cfg.launcher_url,
             "MAGIC_NODE_KEY": node_key(self.cfg.secret, nonce),
+            "MAGIC_SESSION_SECRET": self.cfg.session_secret,
+            "MAGIC_TUNNEL_DIRECT": "1",    # the node's public tunnel goes straight to the app (it enforces sessions)
             "MAGIC_WATCHDOG_DRY_RUN": os.environ.get("POOL_NODE_DRY_RUN", "0"),
         }
         return {"client_id": "me", "image": self.cfg.image, "env": env, "disk": self.cfg.disk_gb,

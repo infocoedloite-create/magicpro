@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Acceptable use · {{ S.brand }}{% endblock %}
+{% block main %}
+<section class="page"><div class="wrap legal">
+  <p class="draft">Draft for review by a lawyer before launch. Not yet legal advice or a final policy.</p>
+  <h1>Acceptable use policy</h1>
+  <p>{{ S.brand }} changes the face in your live video. These rules protect the people whose faces appear and the people who watch. By using {{ S.brand }} you agree to them.</p>
+
+  <h2>Faces you may use</h2>
+  <ul>
+    <li>Your own face.</li>
+    <li>Another person's face only with their prior, written consent for this use. Keep that consent and show it to us if we ask.</li>
+    <li>Public figures, celebrities, politicians and officials only with their written consent, the same as anyone else.</li>
+    <li>Never the face of a child.</li>
+  </ul>
+
+  <h2>What you must not do</h2>
+  <ul>
+    <li>Impersonate a real person, or make viewers believe a real person said or did something they didn't.</li>
+    <li>Commit or prepare fraud, scams, identity theft or to get past identity or age checks (for example "video KYC").</li>
+    <li>Create sexual, nude or intimate content of anyone, or any content involving minors.</li>
+    <li>Harass, bully, threaten, defame or humiliate anyone.</li>
+    <li>Create deceptive political content, fake news or misinformation.</li>
+    <li>Remove, hide or crop out the "AI face swap" label, or present the output as unaltered video.</li>
+    <li>Break any law, including the Information Technology Act, 2000 and the Information Technology (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021.</li>
+  </ul>
+
+  <h2>Labelling</h2>
+  <p>Every picture {{ S.brand }} produces carries a visible "AI face swap" label. When you publish or stream it, tell your audience that the video is altered.</p>
+
+  <h2>What we do</h2>
+  <p>We may review reports, pause or close accounts that break these rules without refund of unused hours, remove uploaded photos, and cooperate with law enforcement where the law requires it.</p>
+
+  <h2>Report misuse</h2>
+  <p>If you see {{ S.brand }} used with your face without consent, or used to deceive, {% if S.support_email %}write to <a href="mailto:{{ S.support_email }}">{{ S.support_email }}</a>{% else %}contact us through the address on this site{% endif %}. We act on reports within the time the law requires.</p>
+</div></section>
+{% endblock %}

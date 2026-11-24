@@ -89,13 +89,13 @@ A Vast.ai GPU bills every second it runs, used or not. Three pieces keep the bil
   then cancels it. Dead-man rule: no streams and no launcher contact for `MAGIC_DEADMAN` (900 s)
   stops it too. It uses the instance-scoped `CONTAINER_API_KEY` Vast puts in every container.
   **Stop GPU now** in the app page stops that node (refused while others stream, unless confirmed).
-* **Launcher** (`deploy/launcher/`), an always-on page on Google Cloud Run (scales to zero, costs
-  next to nothing). Sign in, press **Start camera**, and it sends you to the ready node with the
-  most free capacity, at that node's current HTTPS address (Cloudflare quick tunnel, which changes
-  on every restart; nodes report it in their heartbeat). If no node has room it starts one and
-  shows "Starting GPU…". If your node dies mid-stream, the page comes back to the launcher and is
-  moved to another node.
-* **Autoscaler** (`deploy/launcher/pool.py`, inside the launcher). Capacity is in cost units: each
+* **Website** (`deploy/launcher/`, section 3), always on at Google Cloud Run (scales to zero).
+  Users sign in with Google, buy hours and press **Start the studio**; it sends them to the ready
+  node with the most free capacity, at that node's current HTTPS address (Cloudflare quick tunnel,
+  which changes on every restart; nodes report it in their heartbeat), with a session token. If no
+  node has room it starts one and shows "Starting GPU…". If a node dies mid-stream, the page comes
+  back to the website and is moved to another node.
+* **Autoscaler** (`deploy/launcher/pool.py`, inside the website service). Capacity is in cost units: each
   node has a budget (`MAGIC_GPU_BUDGET`, 4.0) and each stream costs, by the node's settings,
   1080p30 + GFPGAN 1.0 · plain 1080p30 0.5 · 60 fps ×2 · InSwapper 512 Live / 512 / Studio ×2 / ×5 /
   ×8 on the swap part (from `tools/loadtest.py` on an RTX PRO 6000; retune with `MAGIC_COST_MODEL`).
@@ -110,7 +110,7 @@ A Vast.ai GPU bills every second it runs, used or not. Three pieces keep the bil
 **Limits so a bug can't rent GPUs without end:** `POOL_MAX_NODES` (5) running or starting at once,
 `POOL_MAX_INSTANCES` (5) pool instances in total (stopped ones still bill storage, about $0.20/h
 each here), `POOL_MAX_DPH` per GPU, `POOL_MIN_CREDIT` ($2) left on the Vast account, at most one
-scale-up per 20 s, `POOL_MIN_WARM` default 0. The launcher's **GPUs** panel shows every node, its
+scale-up per 20 s, `POOL_MIN_WARM` default 0. The admin page's **GPUs** panel shows every node, its
 load and the current $/h, and has **Stop idle GPUs now**.
 
 Pool nodes are the Vast instances labelled `magicpro-pool:<nonce>`. Each node signs its heartbeat
@@ -120,7 +120,8 @@ launcher accepts heartbeats only from labelled instances on your account.
 Tests (simulated Vast, no network, no money):
 
 ```bash
-python deploy/launcher/test_pool.py        # scaling, routing, limits, rented GPU, auth, HTTP flow
+python deploy/launcher/test_pool.py        # scaling, routing, limits, rented GPU, node auth
+python deploy/launcher/test_web.py         # sign-in, payments, webhook, invites, admin, token, usage
 python deploy/vast/watchdog/test_watchdog.py
 python deploy/vast/watchdog/test_gpucontrol.py
 ```
@@ -159,58 +160,109 @@ Vast pulls it with a read-only login: a service account with `roles/artifactregi
 JSON key base64-encoded, saved as secret `pool-image-login` with the value
 `-u _json_key_base64 -p <base64 key> asia-south1-docker.pkg.dev`.
 
-### 3. Launcher (Google Cloud Run)
+### 3. Website (magicpro.nacgenai.in on Google Cloud Run)
 
-1. **Vast.ai API key:** cloud.vast.ai → Account → API Keys → create a key (instance read/write and
-   offer search, if the form offers permissions). Don't paste it into chat or a terminal.
-2. **Secret Manager** (console.cloud.google.com → Security → Secret Manager, project `magicprov2`):
-   `vast-api-key` (that key), `launcher-password` (the sign-in password), `pool-secret` (any long
-   random string, e.g. from `python -c "import secrets;print(secrets.token_hex(32))"`), and
-   `pool-image-login` from step 2 once the image exists.
-3. **Deploy** (Cloud Shell or a PC with `gcloud`), from the project folder:
+`deploy/launcher/` is the public website and the pool's control service in one Cloud Run service:
+
+* `/` marketing page, `/terms`, `/privacy`, `/acceptable-use` (**drafts for a lawyer**, marked on the page)
+* Google sign-in (`/login`, `/auth/callback`), account page `/app`: balance, hour packs, Start, invite
+  code, history
+* Razorpay hour packs: order created server-side, Checkout in the page, signature checked
+  server-side (`/api/pay/verify`), and the `payment.captured` / `order.paid` webhook
+  (`/api/pay/webhook`). Hours are credited once per order, whichever arrives first.
+* `/admin` for e-mails in `ADMIN_EMAILS`: users and balances, give or take hours, pause or delete
+  a user, invite codes worth N hours that must be redeemed within N hours (`/invite/<code>` links),
+  withdraw codes, payments, GPUs
+* GPU handoff exactly as `docs/handoff-contract.md`: Start → a ready node from the pool (or "Starting
+  GPU…" while one boots) → HS256 token → `{gpu_base}/session?t=…`; usage reports at
+  `/api/gpu/usage` charge only the increase of `total_seconds` per `sid`. `MAGIC_SESSION_SECRET` is
+  used as the HMAC key as stored (its UTF-8 bytes), for the token and for the report signature.
+* Data in Firestore (`users`, `ledger`, `orders`, `sessions`, `invites`).
+
+**Payments stay in test mode.** `RAZORPAY_MODE` defaults to `test` and then only accepts
+`rzp_test_` keys. Live payments need `RAZORPAY_MODE=live`, a `rzp_live_` key **and**
+`RAZORPAY_LIVE_CONFIRM` set to the exact sentence in `deploy/launcher/payments.py`. Don't do that
+before you have a commercial licence for the face-swap model (the current one is non-commercial).
+Pack sizes and prices: `PACKS='[{"id":"h3","hours":3,"price_inr":499},…]'`; the defaults (₹499 /
+₹799 / ₹1,499 for 3 / 5 / 10 h) are placeholders.
+
+Offline tests (fake Google, fake Razorpay, simulated Vast):
 
 ```bash
-PROJECT=magicprov2; REGION=asia-south1
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com --project $PROJECT
-gcloud iam service-accounts create magicpro-launcher --project $PROJECT
-for s in vast-api-key launcher-password pool-secret; do
-  gcloud secrets add-iam-policy-binding $s --project $PROJECT \
-    --member serviceAccount:magicpro-launcher@$PROJECT.iam.gserviceaccount.com --role roles/secretmanager.secretAccessor
-done
-gcloud run deploy magicpro-launcher --source deploy/launcher --project $PROJECT --region $REGION \
-  --service-account magicpro-launcher@$PROJECT.iam.gserviceaccount.com \
-  --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 256Mi \
-  --set-env-vars POOL_MAX_NODES=5,POOL_MAX_INSTANCES=5,POOL_MIN_WARM=0 \
-  --set-secrets VAST_API_KEY=vast-api-key:latest,LAUNCHER_PASSWORD=launcher-password:latest,POOL_SECRET=pool-secret:latest
-URL=$(gcloud run services describe magicpro-launcher --project $PROJECT --region $REGION --format 'value(status.url)')
-gcloud run services update magicpro-launcher --project $PROJECT --region $REGION --update-env-vars LAUNCHER_URL=$URL
+python deploy/launcher/test_web.py && python deploy/launcher/test_pool.py
 ```
 
-Without `POOL_IMAGE` the pool only restarts the instances you adopted and never creates new ones.
-Once the image exists, grant the service account access to `pool-image-login` too and add
-`--update-env-vars POOL_IMAGE=$REGION-docker.pkg.dev/$PROJECT/magicpro/node:v1 --update-secrets
-POOL_IMAGE_LOGIN=pool-image-login:latest`. Keep `--max-instances 1`: reservations and start times
-are kept in memory; the node list itself always comes from Vast and the nodes' heartbeats.
-`--allow-unauthenticated` only lets the sign-in page and the signed node heartbeats in; everything
-else needs the password (signed cookie, 14 days, 10 wrong tries per 10 min per address). With
-`POOL_MIN_WARM` > 0, add a Cloud Scheduler job that POSTs every minute to `/api/pool/tick` with
-header `X-Tick-Token` = hex HMAC-SHA256 of `tick` keyed with the pool secret.
+#### One-time setup (you do these; secrets are never typed by anyone else)
 
-4. **Adopt the existing instance** into the pool: sign in to the launcher and run this in the
-   browser console:
+Decide the Google Cloud project first (`magicprov2`, or `magic-515508` that the local `gcloud` uses);
+below it is `$PROJECT`. Region: **asia-southeast1** (Singapore), because Cloud Run custom domains
+(domain mapping) are not offered in asia-south1 (Mumbai); the video stream never passes through the
+website, so the distance doesn't matter.
+
+1. **Firestore:** console → Firestore → Create database → Native mode, location `asia-southeast1`.
+2. **OAuth consent screen:** console → Google Auth Platform → Branding: app name "Magic Pro",
+   support e-mail, authorised domain `nacgenai.in`, links to `https://magicpro.nacgenai.in/privacy` and
+   `/terms`. Audience: External. Data access: scopes `openid`, `email`, `profile` only (no review needed).
+   Publish the app (while "Testing", only listed test users can sign in).
+3. **OAuth client:** Google Auth Platform → Clients → Create → Web application. Authorised redirect
+   URI: `https://magicpro.nacgenai.in/auth/callback` (add the `…run.app/auth/callback` URL too for
+   testing before the domain works). Keep the client id; the secret goes to Secret Manager.
+4. **Razorpay test keys:** dashboard in **Test mode** → Account & Settings → API keys → Generate
+   test key. Webhooks → Add: URL `https://magicpro.nacgenai.in/api/pay/webhook`, events
+   `payment.captured` and `order.paid`, a webhook secret of your choice.
+5. **Secret Manager** (Security → Secret Manager), one secret each:
+   `magicpro-session-secret` (≥ 32 random bytes, e.g. `python -c "import secrets;print(secrets.token_urlsafe(48))"`;
+   the same value goes to the GPU nodes), `google-client-secret`, `razorpay-key-secret`,
+   `razorpay-webhook-secret`, `vast-api-key`, `pool-secret` (another random string).
+6. **Deploy** (Cloud Shell, from the project folder):
+
+```bash
+PROJECT=<your project>; REGION=asia-southeast1; SA=magicpro-web@$PROJECT.iam.gserviceaccount.com
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com firestore.googleapis.com --project $PROJECT
+gcloud iam service-accounts create magicpro-web --project $PROJECT
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA --role roles/datastore.user
+for s in magicpro-session-secret google-client-secret razorpay-key-secret razorpay-webhook-secret vast-api-key pool-secret; do
+  gcloud secrets add-iam-policy-binding $s --project $PROJECT --member serviceAccount:$SA --role roles/secretmanager.secretAccessor
+done
+gcloud run deploy magicpro-web --source deploy/launcher --project $PROJECT --region $REGION --service-account $SA \
+  --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 512Mi \
+  --set-env-vars "^@^SITE_URL=https://magicpro.nacgenai.in@STORE=firestore@FIRESTORE_PROJECT=$PROJECT@GOOGLE_CLIENT_ID=<client id>@RAZORPAY_KEY_ID=<rzp_test_… key id>@RAZORPAY_MODE=test@ADMIN_EMAILS=<your e-mail>@POOL_MAX_NODES=2@POOL_MAX_INSTANCES=2@POOL_MIN_WARM=0" \
+  --set-secrets MAGIC_SESSION_SECRET=magicpro-session-secret:latest,GOOGLE_CLIENT_SECRET=google-client-secret:latest,RAZORPAY_KEY_SECRET=razorpay-key-secret:latest,RAZORPAY_WEBHOOK_SECRET=razorpay-webhook-secret:latest,VAST_API_KEY=vast-api-key:latest,POOL_SECRET=pool-secret:latest
+```
+
+   `--allow-unauthenticated` is needed for a public website; the app does its own sign-in. Keep
+   `--max-instances 1` (pool timing is kept in memory). Add `POOL_IMAGE` / `POOL_IMAGE_LOGIN` once
+   the node image exists (section 2).
+
+7. **Custom domain** `magicpro.nacgenai.in`:
+   * Verify `nacgenai.in` as yours: run `gcloud domains verify nacgenai.in` (opens Search Console);
+     it shows a TXT value. In **GoDaddy → nacgenai.in → DNS → Add record**: Type `TXT`, Name `@`,
+     Value `google-site-verification=…` (exactly as shown), TTL 1 hour. Click Verify.
+   * `gcloud beta run domain-mappings create --service magicpro-web --domain magicpro.nacgenai.in --region asia-southeast1 --project $PROJECT`
+   * In GoDaddy add: Type `CNAME`, Name `magicpro`, Value `ghs.googlehosted.com.`, TTL 1 hour.
+     (`gcloud beta run domain-mappings describe --domain magicpro.nacgenai.in --region asia-southeast1`
+     prints the same record.) The HTTPS certificate follows within about 15–60 minutes.
+   * Google marks domain mapping as a preview feature with some added latency. For production, the
+     recommended upgrade is a global external Application Load Balancer with a serverless NEG
+     (about US$18/month); then GoDaddy gets an `A` record `magicpro` → the load balancer's IP instead
+     of the CNAME. Firebase Hosting doesn't suit this site: it forwards only a cookie named
+     `__session`, so sign-in would break.
+
+8. **Adopt the existing GPU instance** into the pool: sign in as an admin and run in the browser
+   console on `/admin`:
    `fetch("/api/pool/adopt", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({instance_id: "62324193"})}).then(r => r.json()).then(console.log)`.
-   It labels the instance `magicpro-pool:<nonce>` and prints two lines (`MAGIC_LAUNCHER_URL`,
-   `MAGIC_NODE_KEY`) for `/etc/magicpro-watchdog.env` on that instance; then run
-   `supervisorctl restart magicpro-watchdog`.
+   It labels the instance `magicpro-pool:<nonce>` and prints `MAGIC_LAUNCHER_URL` and
+   `MAGIC_NODE_KEY` for `/etc/magicpro-watchdog.env`; add `MAGIC_TUNNEL_DIRECT=1` and
+   `MAGIC_SESSION_SECRET=<the same secret>` there too, then `supervisorctl restart magicpro-watchdog`.
 
-How users reach a node: the launcher sends the browser to `<node tunnel>/?token=…&autostart=1`
-(the token is the instance's Caddy token from the Vast API); Caddy turns it into a cookie and the
-page removes it from the address bar. For fixed addresses instead of quick tunnels, launch nodes
-with a named Cloudflare tunnel (`CF_TUNNEL_TOKEN`); that bypasses Caddy, so put Cloudflare Access
-in front of it.
+How users reach a node: the node's public quick tunnel goes straight to the app port
+(`127.0.0.1:17860`), and the app checks the session token itself. The watchdog opens that tunnel
+only when the app answers 401 without a session, so an app build without session checks is never
+exposed. The watchdog reads the app's `/api/gpu/status` with the header
+`X-Magic-Watchdog: hex(hmac_sha256(MAGIC_SESSION_SECRET, "watchdog"))`, which the node app must accept.
 
-Known gap: the face library and settings are per node. A user moved to another node (new node or
-reconnect) must pick or upload their face there again until the library is shared (e.g. a bucket).
+Known gap: each user's face library lives on the node they used. A user sent to another node must
+upload their face there again until the library is shared (e.g. a storage bucket).
 
 ## Quality and latency notes
 

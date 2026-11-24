@@ -32,6 +32,7 @@ import signal
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -62,8 +63,15 @@ def log(msg):
     print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, flush=True)
 
 
+SESSION_SECRET = env("MAGIC_SESSION_SECRET", "")
+# Lets the watchdog read the app's /api/gpu/status although every app route needs a user session
+# (docs/handoff-contract.md): X-Magic-Watchdog = hex hmac_sha256(MAGIC_SESSION_SECRET, "watchdog").
+WATCHDOG_TOKEN = hmac.new(SESSION_SECRET.encode(), b"watchdog", hashlib.sha256).hexdigest() if SESSION_SECRET else ""
+
+
 def get_json(url, timeout=3):
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+    req = urllib.request.Request(url, headers={"X-Magic-Watchdog": WATCHDOG_TOKEN} if WATCHDOG_TOKEN and url.startswith(APP) else {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
 
@@ -82,7 +90,55 @@ def read_app():
         return {"active_users": 0}, False
 
 
+TUNNEL_DIRECT = env("MAGIC_TUNNEL_DIRECT", "0") == "1"   # handoff contract: tunnel straight to the app port
+TUNNEL_TARGET = env("MAGIC_TUNNEL_TARGET", "http://localhost:17860")
+_warned = {"open": False}
+
+
+def _text(url, method="GET", timeout=10):
+    req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = r.read().decode().strip()
+    try:
+        v = json.loads(body)
+    except ValueError:
+        return body
+    return v if isinstance(v, str) else (v.get("tunnelUrl") or v.get("url") or "") if isinstance(v, dict) else ""
+
+
+def app_requires_session():
+    """Only expose the app port publicly when it refuses requests without a session (HTTP 401)."""
+    try:
+        urllib.request.urlopen(f"{APP}/", timeout=3)
+        return False
+    except urllib.error.HTTPError as e:
+        return e.code == 401
+    except OSError:
+        return False
+
+
 def read_tunnel():
+    if TUNNEL_DIRECT:
+        if not app_requires_session():
+            if not _warned["open"]:
+                log("NOT opening a public tunnel to the app: it answers without a session (needs the session-auth build)")
+                _warned["open"] = True
+            return None
+        _warned["open"] = False
+        target = urllib.parse.quote(TUNNEL_TARGET, safe="")
+        try:
+            return _text(f"{PORTAL}/get-existing-quick-tunnel/{target}", timeout=5) or None
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                return None
+        except OSError:
+            return None
+        try:
+            log(f"starting a quick tunnel to {TUNNEL_TARGET}")
+            _text(f"{PORTAL}/start-quick-tunnel/{target}", method="POST", timeout=60)
+            return _text(f"{PORTAL}/get-existing-quick-tunnel/{target}", timeout=5) or None
+        except (OSError, ValueError):
+            return None
     try:
         for t in get_json(f"{PORTAL}/get-all-quick-tunnels", timeout=5):
             if str(t.get("targetUrl", "")).rstrip("/").endswith(f":{EXTERNAL_PORT}"):
