@@ -145,6 +145,19 @@ async def scenario_rented_gpu_then_create():
     assert pool.state(pool.nodes[str(v.next_id)]) == "booting"
 
 
+async def scenario_rented_gpu_stays_queued_without_image():
+    c, v, pool = make(image="")
+    v.add(1); v.rented_away.add("1")
+    await pool.refresh(force=True)
+    pool.assign("u1")
+    assert await pool.tick() == [("start", "1")]
+    c.t += 80; await pool.refresh(force=True)
+    assert pool.state(pool.nodes["1"]) == "unavailable"
+    c.t += 25
+    assert await pool.tick() == []                           # no stop: keep the place in Vast's queue
+    assert ("state", "1", "stopped") not in v.calls and "queued" in pool.note
+
+
 async def scenario_idle_pool_starts_nothing():
     c, v, pool = make()
     v.add(1); v.add(2)

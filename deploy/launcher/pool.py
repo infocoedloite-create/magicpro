@@ -336,8 +336,11 @@ class Pool:
         now, cfg = self.clock(), self.cfg
         acts, states = [], {i: self.state(n) for i, n in self.nodes.items()}
         for i, st in states.items():
-            if st in ("unavailable", "failed"):
+            if st == "failed" or (st == "unavailable" and cfg.image):
                 acts.append(("stop", i, "GPU rented by someone else" if st == "unavailable" else "did not come up"))
+            elif st == "unavailable":
+                # no image to rent a replacement from: stopping would only lose the place in Vast's queue
+                self.note = f"GPU {i} is in use by another Vast.ai customer; its start stays queued and it comes up when free."
         if self.paused:
             self.note = "Paused for maintenance: no GPU starts until an admin turns the pause off."
             return acts
