@@ -51,7 +51,8 @@ class Settings:
     swap_passes: int = 2               # 2 = swap again on the swapped face: stronger likeness
     mask_mode: str = "face"            # face = follows the real jawline (106 landmarks) | box = square crop
     face_mask_expand: float = 0.08     # push the face mask past the jaw edge (fraction of face height)
-    swap_zoom: float = 0.9             # < 1 repaints more chin/jaw around the face
+    chin_extend: float = 0.12          # also cover below the jaw: under the chin, neck beard
+    swap_zoom: float = 0.85            # < 1 repaints more chin/jaw around the face
     # detection / tracking (side views: lower threshold, a few hold frames)
     det_size: int = 640
     det_thresh: float = 0.35
@@ -506,7 +507,7 @@ class Engine:
         if lm is not None and faces:
             outlines = []
             for i, f in enumerate(faces):
-                o = face_outline(lm.detect(frame, f.bbox), expand=s.face_mask_expand)
+                o = face_outline(lm.detect(frame, f.bbox), expand=s.face_mask_expand, chin=s.chin_extend)
                 prev = track.outlines[i] if i < len(track.outlines) else None
                 if prev is not None and prev.shape == o.shape and s.smoothing > 0:
                     o = prev * (s.smoothing * 0.6) + o * (1 - s.smoothing * 0.6)   # steady mask edge

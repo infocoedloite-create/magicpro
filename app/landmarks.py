@@ -33,10 +33,13 @@ class Landmarks106:
         return pts @ IM[:, :2].T + IM[:, 2]
 
 
-def face_outline(pts106, expand=0.06, forehead=0.35):
+def face_outline(pts106, expand=0.06, forehead=0.35, chin=0.0):
     """Polygon around the face in frame coordinates: the jaw contour pushed outwards by `expand`
-    (fraction of face height) so the jaw edge and chin are fully inside, closed over the forehead
-    by lifting the upper contour by `forehead` of the face height."""
+    (fraction of face height) so the jaw edge, chin and sideburns are inside, closed over the
+    forehead by lifting the upper contour by `forehead` of the face height. `chin` > 0 adds the
+    area below the jaw (under the chin, neck beard): the lower jaw contour copied downwards by
+    that fraction of the face height, along the face's own vertical axis (works when the head
+    tilts or turns)."""
     jaw = pts106[CONTOUR]
     top = pts106.min(axis=0)[1]
     bottom = pts106.max(axis=0)[1]
@@ -46,7 +49,14 @@ def face_outline(pts106, expand=0.06, forehead=0.35):
     # forehead: copy of the contour's upper part, raised
     upper = out[out[:, 1] < center[1]]
     raised = upper - np.array([0, forehead * height], np.float32)
-    return cv2.convexHull(np.concatenate([out, raised]).astype(np.float32)).reshape(-1, 2)
+    parts = [out, raised]
+    if chin > 0:
+        # face "down" direction: from between the eyes towards the chin point (middle of contour)
+        down = jaw[len(CONTOUR) // 2] - center
+        down = down / max(np.linalg.norm(down), 1.0)
+        lower = out[(out - center) @ down > 0]
+        parts.append(lower + down * (chin * height))
+    return cv2.convexHull(np.concatenate(parts).astype(np.float32)).reshape(-1, 2)
 
 
 def outline_mask(outline, M, size, blur=0.3):
