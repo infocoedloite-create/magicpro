@@ -59,7 +59,9 @@ class Settings:
     det_size: int = 640
     det_thresh: float = 0.35
     smoothing: float = 0.5
-    hold_frames: int = 4
+    hold_frames: int = 4               # (older setting, replaced by hold_ms)
+    track_thresh: float = 0.3          # score needed to KEEP a face already being tracked
+    hold_ms: int = 600                 # keep swapping at the last position through a miss this long
     # blending
     mask_blur: float = 0.3             # higher blends more of the real face back in (weaker swap)
     mask_top: int = 0
@@ -123,30 +125,39 @@ FULL_DETECT_EVERY = 5      # full-frame detection every N frames; in between, on
 
 
 class TrackState:
-    """Per-stream face tracking (smoothing + hold frames). Never shared between users."""
+    """Per-stream face tracking (smoothing + hold). Never shared between users."""
 
     def __init__(self):
         self.smoother = KpsSmoother()
         self.last_faces = []
+        self.last_seen = 0.0          # perf_counter() of the last frame a face was really detected
         self.miss = 0
         self.since_full = FULL_DETECT_EVERY
         self.outlines = []
         self.lock = threading.Lock()
 
+    def tracking(self, now, window=1.0):
+        return bool(self.last_faces) and now - self.last_seen < window
 
-def detect_tracked(detector, frame, s, track):
-    """Full-frame detection every FULL_DETECT_EVERY frames (and whenever the face is lost);
-    otherwise detect at 320 px inside a box around the previous face, which costs a fraction of
-    the GPU and CPU time and keeps the landmarks just as precise."""
-    if not s.many_faces and track.last_faces and track.miss == 0 and track.since_full < FULL_DETECT_EVERY:
+
+def detect_tracked(detector, frame, s, track, now):
+    """Detection with hysteresis, as face trackers do:
+    * a NEW face must pass det_thresh (strict: no false faces);
+    * a face already being tracked only needs track_thresh near its last position, so a dip in
+      score while turning, talking, blinking or in motion blur never drops the swap;
+    * between full-frame passes (every FULL_DETECT_EVERY frames) detection runs at 320 px in a box
+      around the last face: a fraction of the cost, landmarks just as precise."""
+    tracking = track.tracking(now)
+    keep = min(s.det_thresh, s.track_thresh)
+    if not s.many_faces and tracking and track.since_full < FULL_DETECT_EVERY:
         f = track.last_faces[0]
         h, w = frame.shape[:2]
         cx, cy = (f.bbox[0] + f.bbox[2]) / 2, (f.bbox[1] + f.bbox[3]) / 2
-        half = f.size * 1.1
+        half = f.size * 1.2
         x0, y0 = int(max(cx - half, 0)), int(max(cy - half, 0))
         x1, y1 = int(min(cx + half, w)), int(min(cy + half, h))
         if x1 - x0 > 32 and y1 - y0 > 32:
-            faces = detector.detect(frame[y0:y1, x0:x1], 320, s.det_thresh, max_faces=1)
+            faces = detector.detect(frame[y0:y1, x0:x1], 320, keep, max_faces=1)
             if faces:
                 for g in faces:
                     g.bbox += (x0, y0, x0, y0)
@@ -154,7 +165,17 @@ def detect_tracked(detector, frame, s, track):
                 track.since_full += 1
                 return faces
     track.since_full = 0
-    return detector.detect(frame, s.det_size, s.det_thresh, max_faces=0 if s.many_faces else 1)
+    faces = detector.detect(frame, s.det_size, keep if tracking else s.det_thresh, max_faces=0)
+    if tracking and faces and not s.many_faces:
+        # weak detections are only trusted next to where the face was; strong ones anywhere
+        last = track.last_faces[0]
+        lc = np.array([(last.bbox[0] + last.bbox[2]) / 2, (last.bbox[1] + last.bbox[3]) / 2])
+        def near(g):
+            gc = np.array([(g.bbox[0] + g.bbox[2]) / 2, (g.bbox[1] + g.bbox[3]) / 2])
+            return float(np.linalg.norm(gc - lc)) < last.size
+        faces = [g for g in faces if g.score >= s.det_thresh or near(g)]
+        faces.sort(key=lambda g: (not near(g), -g.area))
+    return faces if s.many_faces else faces[:1]
 
 
 class Engine:
@@ -501,11 +522,12 @@ class Engine:
         # short tracking part runs under the stream's lock, the heavy swap/enhance part does not.
         with track.lock:
             t0 = time.perf_counter()
-            faces = detect_tracked(self.detector, frame, s, track)
+            faces = detect_tracked(self.detector, frame, s, track, t0)
             if faces:
-                track.last_faces, track.miss = faces, 0
-            elif track.last_faces and track.miss < s.hold_frames:
-                faces, track.miss = track.last_faces, track.miss + 1   # bridge brief misses on side views
+                track.last_faces, track.miss, track.last_seen = faces, 0, t0
+            elif track.last_faces and t0 - track.last_seen < s.hold_ms / 1000.0:
+                # bridge brief misses (fast turns, hands, blur) for hold_ms, in time not frames
+                faces, track.miss = track.last_faces, track.miss + 1
             faces = track.smoother(faces, s.smoothing)
             t1 = time.perf_counter()
 

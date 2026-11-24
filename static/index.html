@@ -68,11 +68,12 @@
         <label class="field"><span>Swap model</span><select data-key="swapper" id="sel-swapper"></select></label>
         <label class="switch"><input type="checkbox" data-key="swap_enabled"><span>Swap on</span></label>
         <label class="switch"><input type="checkbox" data-key="many_faces"><span>Swap every face in frame</span></label>
-        <label class="range"><span>Detector threshold <output></output></span><input type="range" data-key="det_thresh" min="0.15" max="0.8" step="0.05"></label>
+        <label class="range"><span>Find new face threshold <output></output></span><input type="range" data-key="det_thresh" min="0.15" max="0.8" step="0.05"></label>
+        <label class="range"><span>Keep tracking threshold (lower = never drops) <output></output></span><input type="range" data-key="track_thresh" min="0.1" max="0.6" step="0.05"></label>
         <label class="field"><span>Detector size</span>
           <select data-key="det_size"><option value="320">320 · fastest</option><option value="480">480</option><option value="640">640 · best for side views</option></select></label>
         <label class="range"><span>Landmark smoothing <output></output></span><input type="range" data-key="smoothing" min="0" max="0.9" step="0.05"></label>
-        <label class="range"><span>Hold face when lost (frames) <output></output></span><input type="range" data-key="hold_frames" min="0" max="15" step="1"></label>
+        <label class="range"><span>Hold face when lost (ms) <output></output></span><input type="range" data-key="hold_ms" min="0" max="1500" step="50"></label>
       </section>
 
       <section class="group" aria-labelledby="h-q">
