@@ -131,7 +131,25 @@ def heartbeat(body: dict = Body(...)):
     tmp = BEATS / f".{cid}.tmp"
     tmp.write_text(json.dumps({"streaming": bool(body.get("streaming"))}))
     tmp.replace(BEATS / f"{cid}.json")
+    log_client_diag(cid, body.get("diag"))
     return status()
+
+
+DIAG_KEYS = ("mode", "cam_fps", "sent_fps", "rx_fps", "shown_fps", "drop_enc", "drop_sock", "dec_err", "rtt_ms",
+             "kbps", "size", "hidden", "touch")
+
+
+def log_client_diag(cid, diag):
+    """One line per streaming page every heartbeat (5 s): where its frames go. Numbers only, no
+    picture data: camera fps, sent, received back, shown, drops before encoding / at the socket."""
+    if not isinstance(diag, dict):
+        return
+    parts = []
+    for k in DIAG_KEYS:
+        v = diag.get(k)
+        if isinstance(v, (int, float, bool)) or (isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9.x]{0,16}", v)):
+            parts.append(f"{k}={v}")
+    print(f"[client {cid[:6]}] " + " ".join(parts), flush=True)
 
 
 @router.post("/stop")

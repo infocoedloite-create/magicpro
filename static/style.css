@@ -57,9 +57,15 @@ code { font-family: var(--mono); font-size: .92em; background: var(--surface-2);
 /* layout: equal edges on both sides */
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: var(--edge); padding: var(--edge); align-items: start; }
 .stage { position: sticky; top: 89px; }
-.screen { position: relative; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+/* The screen takes the video's own shape (set from the stream: portrait phones, 4:3 webcams) and is
+   never taller than the window allows, so a portrait video is not a tall strip you have to scroll. */
+.screen { position: relative; aspect-ratio: var(--arw, 16) / var(--arh, 9); width: min(100%, calc(var(--screen-h, 78vh) * var(--arw, 16) / var(--arh, 9))); margin-inline: auto; background: #000; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
 .screen img, .screen canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
 .screen [hidden] { display: none; }
+/* camera feed used for capture in Safari/Firefox: must be rendered for frame callbacks, never seen */
+.screen video.capture { display: block; position: absolute; left: 0; top: 0; width: 2px; height: 2px; opacity: .01; pointer-events: none; }
+/* full window, where the browser has no element full screen (iPhone Safari) */
+.screen.fill { position: fixed; inset: 0; z-index: 50; width: 100vw; height: 100dvh; max-width: none; aspect-ratio: auto; border: 0; border-radius: 0; }
 body[data-source="browser"] .server-only, body[data-source="server"] .browser-only { display: none; }
 body[data-hosted="1"] .local-only, body[data-hosted="1"] .server-only, body:not([data-hosted="1"]) .hosted-only { display: none !important; }
 body[data-hosted="1"] .meters { grid-template-columns: repeat(2, 1fr); }
@@ -129,18 +135,47 @@ input[type=range] { width: 100%; height: 32px; accent-color: var(--accent); curs
 .msg.bad { color: #fca5a5; }
 .msg.good { color: var(--ok); }
 
+.stage, .panel, .group, .drop { min-width: 0; }   /* long words (file names) must not widen the page */
+.drop { overflow-wrap: anywhere; }
+.drop input { max-width: 100%; }
 @media (max-width: 1100px) {
-  .layout { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: minmax(0, 1fr); }
   .stage { position: static; }
   .meters { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 560px) {
-  :root { --edge: 14px; }
-  .top { flex-wrap: wrap; }
-  .top-actions { width: 100%; }
-  .top-actions .btn { flex: 1; }
+  :root { --edge: 12px; --gap: 12px; }
+  html, body { font-size: 14px; }
+  /* compact top bar: brand and status on one line, the account under them, Start full width */
+  .top { position: static; flex-wrap: wrap; gap: 8px 10px; padding: 10px var(--edge); padding-top: max(10px, env(safe-area-inset-top)); }
+  .brand { font-size: 16px; }
+  .status { padding: 4px 10px; font-size: 12px; }
+  .account { order: 3; width: 100%; justify-content: space-between; }
+  .top-actions { order: 4; width: 100%; }
+  .top-actions .btn { flex: 1; min-height: 48px; }
+  .layout { padding: var(--edge); padding-bottom: max(var(--edge), env(safe-area-inset-bottom)); gap: var(--edge); }
+  /* the video gets most of the screen: portrait fits in ~62 % of the height, landscape spans the width */
+  .screen { --screen-h: 62vh; --screen-h: 62dvh; border-radius: var(--r); }
+  .screen .fs, .screen .pip { top: 8px; width: 40px; min-height: 40px; }
+  .screen .fs { right: 8px; }
+  .screen .pip { right: 54px; }
+  .meters { margin-top: 8px; }
+  .meters div { padding: 8px 12px; }
+  .meters dd { font-size: 16px; }
+  .group { padding: 14px; gap: 12px; }
   .grid { grid-template-columns: repeat(3, 1fr); }
   .pair { grid-template-columns: 1fr; }
+  /* iPhone zooms the page into any field under 16 px when it is focused */
+  .field input, .field select, .drop input { font-size: 16px; }
+}
+@media (max-width: 560px) and (orientation: landscape), (max-height: 500px) and (orientation: landscape) {
+  .screen { --screen-h: 82vh; --screen-h: 82dvh; }
+}
+/* touch screens: no hover, so delete buttons are always visible and nothing waits for a hover */
+@media (hover: none) {
+  .face .del { opacity: 1; width: 32px; height: 32px; }
+  .btn:hover, .face:hover { transform: none; }
+  .face:hover img { transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }

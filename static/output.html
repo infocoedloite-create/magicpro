@@ -2,51 +2,94 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Magic Pro · Output</title>
   <style>
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-    video, img { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+    canvas, img { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+    [hidden] { display: none !important; }
+    #wait { position: fixed; inset: 0; display: grid; place-items: center; color: #6b7076; font: 14px system-ui, sans-serif; text-align: center; padding: 24px; }
     body.idle, body.idle * { cursor: none; }
   </style>
 </head>
 <body>
   <!-- Only the video: no controls, no buttons. Double-click toggles full screen; the cursor hides itself. -->
-  <video id="v" autoplay muted playsinline disablepictureinpicture></video>
+  <canvas id="c" hidden></canvas>
   <img id="i" alt="" hidden>
+  <div id="wait">Waiting for the video. Press Start camera in the studio tab.</div>
   <script>
-    // The video comes straight from the Magic Pro tab that opened this one (same page, no second
-    // connection): the swapped video canvas as a live stream, or the server camera feed.
-    const v = document.getElementById("v"), img = document.getElementById("i");
-    let current = null;
+    // The studio tab sends its swapped video here over a BroadcastChannel, still encoded (H.264, or
+    // JPEG in the fallback mode), and this tab decodes and draws it. It can't borrow the studio's
+    // canvas: a tab in the background produces no canvas frames, which showed as a black screen.
+    const c = document.getElementById("c"), ctx = c.getContext("2d"), img = document.getElementById("i");
+    const wait = document.getElementById("wait");
+    const ch = "BroadcastChannel" in window ? new BroadcastChannel("magicpro-output") : null;
+    let dec = null, ready = false, lastFrame = 0, askedKey = 0, ts = 0;
 
-    function host() {   // the Magic Pro page: the tab that opened us, or the page embedding us
-      if (window.opener && !window.opener.closed) return window.opener;
-      return window.parent !== window ? window.parent : null;
+    function show(w, h) {
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      c.hidden = false; img.hidden = true; wait.hidden = true;
+      lastFrame = performance.now();
+    }
+    function askKey() {
+      if (performance.now() - askedKey < 700) return;
+      askedKey = performance.now();
+      ch?.postMessage({ t: "need-key" });
+    }
+    function makeDecoder() {
+      ready = false;
+      dec = new VideoDecoder({
+        output: (f) => { show(f.displayWidth, f.displayHeight); ctx.drawImage(f, 0, 0); f.close(); },
+        error: () => { dec = null; askKey(); },
+      });
+      dec.configure({ codec: "avc1.640033", optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });
     }
 
-    function attach() {
+    ch?.addEventListener("message", async (e) => {
+      const m = e.data;
+      if (!m || typeof m !== "object") return;
+      if (m.d) {                                    // H.264 access unit
+        if (!("VideoDecoder" in window)) return;
+        if (!dec || dec.state === "closed") makeDecoder();
+        if (!ready && !m.k) { askKey(); return; }  // decoding must start at a keyframe
+        ready = true;
+        try { dec.decode(new EncodedVideoChunk({ type: m.k ? "key" : "delta", timestamp: (ts += 33333), data: m.d })); }
+        catch { dec = null; askKey(); }
+      } else if (m.jpeg) {                          // fallback mode: one JPEG per frame
+        const bmp = await createImageBitmap(new Blob([m.jpeg], { type: "image/jpeg" }));
+        show(bmp.width, bmp.height);
+        ctx.drawImage(bmp, 0, 0);
+        bmp.close();
+      }
+    });
+    // tell the studio we are here (it only sends video while an output tab is open)
+    const hello = () => ch?.postMessage({ t: ready ? "alive" : "need-key" });
+    hello();
+    setInterval(hello, 2000);
+    // the stream stopped (camera off, studio closed): a clean black screen with the hint, not a frozen frame
+    setInterval(() => { if (lastFrame && !c.hidden && performance.now() - lastFrame > 3000) { c.hidden = true; wait.hidden = false; } }, 1000);
+
+    // Local use with the camera plugged into the GPU machine: the studio gives us a URL instead.
+    function host() { return window.opener && !window.opener.closed ? window.opener : null; }
+    let current = null;
+    function attachUrl() {
       const h = host();
-      const src = h && h.magicOutputSource ? h.magicOutputSource() : null;
-      if (!src) return;
-      if (src.kind === "stream" && src.stream !== current) {
-        current = src.stream;
-        img.hidden = true; img.removeAttribute("src");
-        v.hidden = false; v.srcObject = src.stream; v.play().catch(() => {});
-      } else if (src.kind === "url" && src.url !== current) {
+      let src = null;
+      try { src = h && h.magicOutputSource ? h.magicOutputSource() : null; } catch { /* other origin */ }
+      if (src && src.kind === "url" && src.url !== current) {
         current = src.url;
-        v.hidden = true; v.srcObject = null;
-        img.hidden = false; img.src = src.url;
+        c.hidden = true; wait.hidden = true; img.hidden = false; img.src = src.url;
       }
     }
-    attach();
-    setInterval(attach, 1000);          // follows a camera restart in the main tab
+    attachUrl();
+    setInterval(attachUrl, 1000);
+    if (!ch) wait.textContent = "This browser can't show the output in a separate tab. Use the full-screen button in the studio instead.";
 
     let t;
     const wake = () => { document.body.classList.remove("idle"); clearTimeout(t); t = setTimeout(() => document.body.classList.add("idle"), 1500); };
     addEventListener("mousemove", wake);
     wake();
-    addEventListener("dblclick", () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen());
+    addEventListener("dblclick", () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.());
   </script>
 </body>
 </html>

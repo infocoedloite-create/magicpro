@@ -27,6 +27,21 @@ from .onnx_utils import runtime_info
 from .swapper import FaceSwapper
 
 RESOLUTIONS = {"720p": (1280, 720), "1080p": (1920, 1080)}
+
+
+def fit_resolution(frame, resolution):
+    """Scale to the chosen resolution keeping the camera's own shape: a phone held upright stays
+    portrait (720x1280), a 4:3 webcam stays 4:3 (960x720). Stretching every frame to 16:9 used to
+    squash faces. Sides are even, as H.264 needs."""
+    w, h = RESOLUTIONS.get(resolution, RESOLUTIONS["720p"])
+    fh, fw = frame.shape[:2]
+    if fh > fw:
+        w, h = h, w
+    scale = min(w / fw, h / fh)
+    tw, th = int(round(fw * scale)) & ~1, int(round(fh * scale)) & ~1
+    if (tw, th) == (fw, fh):
+        return frame
+    return cv2.resize(frame, (tw, th), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
 STATS_DIR = Path(tempfile.gettempdir()) / f"magicpro-stats-{config.PORT}"
 RESTART_KEYS = {"camera", "camera_backend", "resolution", "fps"}
 
@@ -36,7 +51,7 @@ class Settings:
     # capture / output
     input_source: str = "browser"      # browser (webcam streamed from the page) | server (camera on this machine)
     stream_quality: int = 85           # JPEG quality (fallback mode for browsers without WebCodecs)
-    stream_bitrate_mbps: float = 8.0   # H.264 bitrate, both directions
+    stream_bitrate_mbps: float = 4.0   # H.264 bitrate, both directions (ceiling: the page lowers it on a busy link)
     camera: int = 0
     camera_backend: str = "dshow"      # dshow | msmf | any
     resolution: str = "1080p"
@@ -185,7 +200,7 @@ NEW_USER_SETTINGS = dict(
     input_source="browser", resolution="720p", fps=30, swapper="inswapper_128_fp16", enhancer="gfpgan_1.4",
     enhancer_blend=0.5, mask_mode="face", face_mask_expand=0.08, chin_extend=0.04, swap_zoom=0.9,
     swap_passes=1, mask_blur=0.3, edge_detail=0.4, mouth_keep="inner", smoothing=0.5, det_thresh=0.5,
-    track_thresh=0.3, hold_ms=600, disclosure_label=True)
+    track_thresh=0.3, hold_ms=600, disclosure_label=True, stream_bitrate_mbps=4.0)
 
 
 class Space:
@@ -561,9 +576,8 @@ class Engine:
         s = space.s
         if s.mirror:
             frame = cv2.flip(frame, 1)
-        w, h = RESOLUTIONS[s.resolution]
-        if frame.shape[1] != w or frame.shape[0] != h:
-            frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+        frame = fit_resolution(frame, s.resolution)
+        h, w = frame.shape[:2]
         self.stats["output"] = f"{w}x{h}"
 
         emb = space.library.embedding(s.source_ids) if s.swap_enabled else None

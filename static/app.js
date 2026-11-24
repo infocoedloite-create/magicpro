@@ -80,11 +80,17 @@ function applySettings(s) {
 //    (queueing inflates the average, and steering by it would feed the queue it measures)
 //  * nothing is sent while the socket still holds an unsent frame, so the upload paces itself
 const bs = { running: false, stream: null, ws: null, sendId: 0, recvId: 0, sent: new Map(), rtt: 0, rtts: [], busy: false, cap: null, capCtx: null, outCtx: null, timer: null };
-function baseRtt() { return bs.rtts.length ? Math.min(...bs.rtts) : 0; }
+// (measured: a cap from the single LOWEST round trip dropped 1 frame in 10 whenever the internet
+// jittered; the low quartile plus 2 spare slots keeps 30 fps without letting a queue grow)
+function baseRtt() {
+  if (!bs.rtts.length) return 0;
+  const s = [...bs.rtts].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 4)];
+}
 function maxInFlight() {
   const base = baseRtt();
-  if (!base) return 2;
-  return Math.max(2, Math.min(6, Math.ceil((base * (state?.settings.fps || 30)) / 1000) + 1));
+  if (!base) return 3;
+  return Math.max(3, Math.min(8, Math.ceil((base * (state?.settings.fps || 30)) / 1000) + 2));
 }
 
 async function listBrowserCams() {
@@ -96,16 +102,62 @@ async function listBrowserCams() {
   if (localStorage.bcam && devs.some((d) => d.deviceId === localStorage.bcam)) sel.value = localStorage.bcam;
 }
 
-const hasWebCodecs = () => "VideoEncoder" in window && "VideoDecoder" in window && "MediaStreamTrackProcessor" in window;
+// H.264 needs an encoder, a decoder and a way to read camera frames: MediaStreamTrackProcessor
+// (Chrome, Edge, Android) or a playing <video> with requestVideoFrameCallback (Safari, Firefox).
+const hasWebCodecs = () => "VideoEncoder" in window && "VideoDecoder" in window && "VideoFrame" in window
+  && ("MediaStreamTrackProcessor" in window || "requestVideoFrameCallback" in HTMLVideoElement.prototype);
+const touch = matchMedia("(pointer: coarse)").matches;
+if (touch) $("#lib-hint").textContent = "Tap to use · press and hold to blend photos of one person";
+
+// The visible screen takes the video's own shape (portrait phones, 4:3 webcams) instead of 16:9.
+function setScreenShape(w, h) {
+  if (!w || !h || (bs.shape && bs.shape[0] === w && bs.shape[1] === h)) return;
+  bs.shape = [w, h];
+  const sc = $("#screen");
+  sc.style.setProperty("--arw", w);
+  sc.style.setProperty("--arh", h);
+}
+
+// Camera frames as VideoFrames, one at a time: the newest frame when the reader asks for one.
+async function cameraFrames(track) {
+  if ("MediaStreamTrackProcessor" in window) {
+    const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+    return { read: () => reader.read(), cancel: () => reader.cancel().catch(() => {}) };
+  }
+  // Safari, Firefox: a playing <video>. It must be rendered (not display:none) for frame callbacks.
+  const video = $("#cam");
+  video.srcObject = bs.stream;
+  video.muted = true;
+  video.playsInline = true;
+  video.classList.add("capture");
+  video.hidden = false;
+  await video.play();
+  let waiter = null, closed = false, ts = 0;
+  const give = () => {
+    if (!waiter || closed || video.readyState < 2) return;
+    const w = waiter;
+    waiter = null;
+    try { w({ value: new VideoFrame(video, { timestamp: (ts += 33333) }), done: false }); } catch { waiter = w; }
+  };
+  const onFrame = () => { if (closed) return; give(); video.requestVideoFrameCallback(onFrame); };
+  video.requestVideoFrameCallback(onFrame);
+  const poll = setInterval(give, 1000 / (state.settings.fps || 30));   // in case frame callbacks stall
+  return {
+    read: () => new Promise((r) => { waiter = r; }),
+    cancel: () => { closed = true; clearInterval(poll); video.classList.remove("capture"); waiter?.({ done: true }); },
+  };
+}
 
 async function startBrowser() {
   if (!window.isSecureContext || !navigator.mediaDevices) {
     throw new Error("The browser only allows the webcam on https:// or localhost. Open this page through the SSH tunnel or the https link.");
   }
-  const [w, h] = state.settings.resolution === "1080p" ? [1920, 1080] : [1280, 720];
+  let [w, h] = state.settings.resolution === "1080p" ? [1920, 1080] : [1280, 720];
+  if (touch && matchMedia("(orientation: portrait)").matches) [w, h] = [h, w];   // phone held upright
+  const cam = localStorage.bcam ? { deviceId: { ideal: localStorage.bcam } } : touch ? { facingMode: "user" } : {};
   bs.stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { deviceId: localStorage.bcam ? { ideal: localStorage.bcam } : undefined, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: state.settings.fps } },
+    video: { ...cam, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: state.settings.fps } },
   });
   listBrowserCams();
   if (hasWebCodecs()) {
@@ -141,6 +193,8 @@ async function startH264() {
   ws.binaryType = "arraybuffer";
   bs.ws = ws;
   bs.sendId = bs.recvId = 0; bs.sent.clear(); bs.mode = "H.264";
+  bs.diag = newDiag();
+  bs.bitrate = bitrate;
   let needKey = true, decReady = false;
 
   const encoder = new VideoEncoder({
@@ -162,10 +216,13 @@ async function startH264() {
     const d = new VideoDecoder({
       output: (f) => {
         if (out.width !== f.displayWidth || out.height !== f.displayHeight) { out.width = f.displayWidth; out.height = f.displayHeight; }
+        setScreenShape(f.displayWidth, f.displayHeight);
         outCtx.drawImage(f, 0, 0);
         f.close();
+        bs.diag.shown++;
+        bs.shownTotal = (bs.shownTotal || 0) + 1;
       },
-      error: () => { decReady = false; bs.decoder = makeDecoder(); if (ws.readyState === 1) ws.send('{"t":"kf"}'); },
+      error: () => { bs.diag.decErr++; decReady = false; bs.decoder = makeDecoder(); if (ws.readyState === 1) ws.send('{"t":"kf"}'); },
     });
     d.configure({ codec: "avc1.640033", optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });
     return d;
@@ -188,6 +245,8 @@ async function startH264() {
     if (t) { bs.rtt = performance.now() - t; bs.rtts.push(bs.rtt); if (bs.rtts.length > 90) bs.rtts.shift(); }
     for (const k of bs.sent.keys()) if (k <= id) bs.sent.delete(k);
     bs.recvId = Math.max(bs.recvId, id);
+    bs.diag.rx++;
+    toOutputTab({ k: key, d: e.data.slice(6) });
     if (!decReady && !key) return;
     decReady = true;
     try { bs.decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: id, data: new Uint8Array(e.data, 6) })); }
@@ -201,15 +260,38 @@ async function startH264() {
   await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = () => fail(new Error("Could not connect to the server.")); });
 
   bs.running = true;
-  const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+  const reader = await cameraFrames(track);
   bs.reader = reader;
-  const sendBudget = bitrate / 8 * 0.12;              // at most ~120 ms of video waiting in the socket
+  // at most ~120 ms of video waiting in the socket, but never less than one keyframe's worth
+  const budget = () => Math.max(60_000, bs.bitrate / 8 * 0.12);
+  // Adaptive upload bitrate (AIMD): when the link starts to queue, cut it by 30 % at once so frames
+  // keep flowing instead of being dropped; after 3 clean seconds creep back up towards the setting.
+  let clean = 0, lastChange = 0;
+  bs.abr = setInterval(() => {
+    const d = bs.diag, now = performance.now();
+    const congested = d.dropSock > d.abrDrops || d.peakBuf > budget() * 0.5;
+    d.abrDrops = d.dropSock;
+    d.peakBuf = 0;
+    clean = congested ? 0 : clean + 1;
+    let next = bs.bitrate;
+    if (congested && now - lastChange > 1500) next = Math.max(800_000, Math.round(bs.bitrate * 0.7));
+    else if (clean >= 3 && bs.bitrate < bitrate) next = Math.min(bitrate, Math.round(bs.bitrate * 1.15));
+    if (next !== bs.bitrate && encoder.state === "configured") {
+      bs.bitrate = next;
+      lastChange = now;
+      clean = 0;
+      try { encoder.configure({ ...cfg, bitrate: next }); needKey = true; } catch { /* keep the old rate */ }
+    }
+  }, 1000);
   (async () => {
     while (bs.running) {
       const { value: frame, done } = await reader.read();
       if (done || !frame) break;
+      bs.diag.cam++;
+      bs.diag.peakBuf = Math.max(bs.diag.peakBuf, ws.bufferedAmount);
       // Drop before encoding (never after): keeps the H.264 stream valid while the link catches up.
-      if (encoder.encodeQueueSize > 1 || ws.bufferedAmount > sendBudget || ws.readyState !== 1) { frame.close(); continue; }
+      if (encoder.encodeQueueSize > 1) { bs.diag.dropEnc++; frame.close(); continue; }
+      if (ws.bufferedAmount > budget() || ws.readyState !== 1) { bs.diag.dropSock++; frame.close(); continue; }
       const id = ++bs.sendId;
       bs.sent.set(id, performance.now());
       const vf = new VideoFrame(frame, { timestamp: id });
@@ -217,14 +299,58 @@ async function startH264() {
       encoder.encode(vf, { keyFrame: needKey || id % (fps * 2) === 0 });
       needKey = false;
       vf.close();
+      bs.diag.sent++;
     }
   })().catch((e) => console.warn(e));
+}
+
+/* ---- stream diagnostics: where frames go (sent to the server with the page heartbeat) ---- */
+function newDiag() {
+  return { t: performance.now(), cam: 0, sent: 0, dropEnc: 0, dropSock: 0, rx: 0, shown: 0, decErr: 0, peakBuf: 0, abrDrops: 0 };
+}
+function takeDiag() {
+  const d = bs.diag;
+  if (!d || !bs.running) return null;
+  const sec = Math.max(0.5, (performance.now() - d.t) / 1000), r = (n) => Math.round((n / sec) * 10) / 10;
+  const out = { mode: bs.mode, cam_fps: r(d.cam), sent_fps: r(d.sent), shown_fps: r(d.shown), rx_fps: r(d.rx),
+    drop_enc: d.dropEnc, drop_sock: d.dropSock, dec_err: d.decErr, rtt_ms: Math.round(bs.rtt), kbps: Math.round((bs.bitrate || 0) / 1000),
+    size: bs.shape ? bs.shape.join("x") : "", hidden: document.hidden, touch };
+  bs.diag = Object.assign(newDiag(), { abrDrops: 0 });
+  return out;
+}
+// What the user sees: frames shown per second, measured on this page (the server's number only
+// counts frames it received).
+let shownLast = 0;
+setInterval(() => {
+  const n = bs.shownTotal || 0;
+  bs.viewFps = bs.running ? n - shownLast : 0;
+  shownLast = n;
+}, 1000);
+
+/* ---- picture in picture: the output tab decodes the same video itself ---- */
+// A hidden tab produces no canvas frames, so the output tab can't borrow this page's canvas. It gets
+// the encoded video over a BroadcastChannel (a few KB per frame) and decodes it on its own.
+const outChannel = "BroadcastChannel" in window ? new BroadcastChannel("magicpro-output") : null;
+let outTabSeen = 0;
+outChannel?.addEventListener("message", (e) => {
+  if (!e.data || typeof e.data !== "object") return;
+  if (e.data.t === "alive" || e.data.t === "need-key") outTabSeen = Date.now();
+  if (e.data.t === "need-key" && bs.ws?.readyState === 1 && bs.mode === "H.264") bs.ws.send('{"t":"kf"}');
+});
+function toOutputTab(msg) {
+  if (outChannel && Date.now() - outTabSeen < 5000) outChannel.postMessage(msg);
 }
 
 async function startJpeg(w, h) {
   const video = $("#cam");
   video.srcObject = bs.stream;
+  video.muted = true;
+  video.playsInline = true;
+  video.classList.add("capture");      // rendered (tiny), or frame callbacks never fire
+  video.hidden = false;
   await video.play();
+  bs.diag = newDiag();
+  setScreenShape(w, h);
   bs.mode = "JPEG";
 
   bs.cap = Object.assign(document.createElement("canvas"), { width: w, height: h });
@@ -252,9 +378,13 @@ async function startJpeg(w, h) {
     for (const k of bs.sent.keys()) if (k <= id) bs.sent.delete(k);
     if (id <= bs.recvId) return;   // an older frame finished after a newer one: never step back
     bs.recvId = id;
+    bs.diag.rx++;
+    toOutputTab({ jpeg: e.data.slice(4) });
     const bmp = await createImageBitmap(new Blob([new Uint8Array(e.data, 4)], { type: "image/jpeg" }));
     bs.outCtx.drawImage(bmp, 0, 0, bs.cap.width, bs.cap.height);
     bmp.close();
+    bs.diag.shown++;
+    bs.shownTotal = (bs.shownTotal || 0) + 1;
     pump();
   };
   ws.onclose = (e) => {
@@ -290,6 +420,7 @@ async function pump() {
     new DataView(head).setUint32(0, id, true);
     bs.sent.set(id, performance.now());
     ws.send(new Blob([head, blob]));
+    bs.diag.sent++;
   } finally {
     bs.busy = false;
   }
@@ -298,7 +429,11 @@ async function pump() {
 function stopBrowser() {
   bs.running = false;
   clearInterval(bs.timer);
-  bs.reader?.cancel().catch(() => {});
+  clearInterval(bs.abr);
+  const r = bs.reader?.cancel();
+  if (r && r.catch) r.catch(() => {});
+  $("#cam").classList.remove("capture");
+  $("#cam").hidden = true;
   for (const c of [bs.encoder, bs.decoder]) { try { if (c && c.state !== "closed") c.close(); } catch { /* closed */ } }
   bs.reader = bs.encoder = bs.decoder = null;
   bs.ws?.close();
@@ -329,7 +464,19 @@ function renderLibrary() {
       else ids.push(it.id);
       setSetting("source_ids", [...new Set(ids)]).then(renderLibrary);
     };
-    b.addEventListener("click", (e) => { if (!e.target.closest(".del")) pick(e.ctrlKey || e.metaKey || e.shiftKey); });
+    // touch screens have no Ctrl key: a long press (half a second) adds the photo to the blend
+    let pressT = null, longPressed = false;
+    b.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" || e.target.closest(".del")) return;
+      longPressed = false;
+      pressT = setTimeout(() => { longPressed = true; navigator.vibrate?.(15); pick(true); }, 500);
+    });
+    ["pointerup", "pointercancel", "pointerleave"].forEach((ev) => b.addEventListener(ev, () => clearTimeout(pressT)));
+    b.addEventListener("contextmenu", (e) => { if (touch) e.preventDefault(); });
+    b.addEventListener("click", (e) => {
+      if (longPressed) { longPressed = false; return; }
+      if (!e.target.closest(".del")) pick(e.ctrlKey || e.metaKey || e.shiftKey);
+    });
     b.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e.ctrlKey); } });
     b.querySelector(".del").addEventListener("click", async () => {
       if (!confirm(`Delete "${it.name}" from the library?`)) return;
@@ -390,7 +537,7 @@ function renderRunning(stats) {
 }
 
 function renderStats(s) {
-  $("#m-fps").textContent = s.fps ?? 0;
+  $("#m-fps").textContent = bs.running ? (bs.viewFps ?? 0) : (s.fps ?? 0);   // frames you actually see
   $("#m-rtt").textContent = bs.running ? `${Math.round(bs.rtt)} ms` : "–";
   $("#m-lat").textContent = `${s.latency_ms ?? 0} ms`;
   $("#m-det").textContent = `${s.detect_ms ?? 0} ms`;
@@ -516,20 +663,24 @@ $("#preset-best").addEventListener("click", async () => {
 /* Picture in picture: the swapped video alone in a new tab (static/output.html), fitted to the
    tab, no controls. The tab takes the live canvas stream straight from this page: no second
    connection, no extra delay. */
-let outStream = null;
-window.magicOutputSource = () => {
-  if (source() === "server") return { kind: "url", url: "/video.mjpg?full=1" };
-  outStream = outStream || $("#out").captureStream(60);
-  return { kind: "stream", stream: outStream };
-};
+window.magicOutputSource = () => (source() === "server"
+  ? { kind: "url", url: "/video.mjpg?full=1" }
+  : { kind: "channel" });          // the output tab decodes the stream itself (see toOutputTab)
 $("#pip").addEventListener("click", () => {
   const w = window.open("/static/output.html", "magicpro-output");
   if (!w) showError("Your browser blocked the new tab. Allow pop-ups for this site and try again.");
 });
 
+// Full screen: the real thing where the browser allows it on an element (not iPhone Safari);
+// otherwise the output fills the window, and a tap on the same button brings the page back.
 $("#fullscreen").addEventListener("click", () => {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else $("#screen").requestFullscreen();
+  const sc = $("#screen");
+  if (document.fullscreenEnabled) {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else sc.requestFullscreen().catch(() => sc.classList.toggle("fill"));
+  } else {
+    sc.classList.toggle("fill");
+  }
 });
 
 setInterval(async () => {
@@ -551,7 +702,7 @@ loadMe().then(load).then(switchSource).catch((e) => showError(e.message));
 const gpuCid = sessionStorage.gpuCid || (sessionStorage.gpuCid = Math.random().toString(36).slice(2) + Date.now().toString(36));
 async function gpuBeat() {
   try {
-    const s = await post("/api/gpu/heartbeat", { cid: gpuCid, streaming: isRunning(state) });
+    const s = await post("/api/gpu/heartbeat", { cid: gpuCid, streaming: isRunning(state), diag: takeDiag() });
     const w = s.watchdog || {};
     if (w.launcher) gpuPool = { launcher: w.launcher, node: w.node };
     const fresh = w.updated && Date.now() / 1000 - w.updated < 30;
