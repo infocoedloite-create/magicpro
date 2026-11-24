@@ -2,12 +2,54 @@
 {% block title %}Admin · {{ S.brand }}{% endblock %}
 {% block navlinks %}<a href="/app">Account</a><a href="/admin">Admin</a>{% endblock %}
 {% block main %}
-<section class="page">
+<section class="page admin">
   <div class="wrap stack">
-    <div class="page-head"><h1>Admin</h1><p class="muted" id="mode"></p></div>
+    <div class="page-head"><h1>Admin</h1><p class="notice test" id="mode" hidden></p></div>
+    <nav class="admin-nav" aria-label="Admin sections">
+      <a href="#overview">Overview</a><a href="#users">Users</a><a href="#packages">Packages</a><a href="#limits">Limits</a>
+      <a href="#invites">Invite codes</a><a href="#payments">Payments</a><a href="#gpus">GPUs</a><a href="#audit">Audit log</a>
+    </nav>
     <p class="notice" id="msg" role="status" hidden></p>
 
-    <div class="box">
+    <div class="box" id="overview">
+      <h2>Overview</h2>
+      <div class="kpis" id="kpis"></div>
+      <p class="small muted" id="ov-note"></p>
+    </div>
+
+    <div class="box" id="users">
+      <h2>Users</h2>
+      <form class="form-row" id="user-search" role="search">
+        <label for="q">Search by name or e-mail<input id="q" type="search" autocomplete="off"></label>
+        <button class="btn" type="submit">Find users</button>
+      </form>
+      <div class="table-scroll"><table><thead><tr><th>User</th><th>Balance</th><th>Used</th><th>Joined</th><th>Last seen</th><th>State</th><th></th></tr></thead><tbody id="user-rows"></tbody></table></div>
+      <div id="profile" class="profile" hidden></div>
+    </div>
+
+    <div class="box" id="packages">
+      <h2>Packages</h2>
+      <p class="small muted">The home page and the Buy screen show enabled packages in this order. Changing a price or hours affects new purchases only; paid orders keep what was bought.</p>
+      <div class="table-scroll"><table><thead><tr><th>Order</th><th>Name</th><th>Hours</th><th>Price (₹)</th><th>Use within (days)</th><th>Popular</th><th>On sale</th><th></th></tr></thead><tbody id="pkg-rows"></tbody></table></div>
+      <div class="actions"><button class="btn" id="pkg-add" type="button">Add a package</button></div>
+    </div>
+
+    <div class="box" id="limits">
+      <h2>Limits</h2>
+      <p class="small muted">For everyone. Session length, hours per day and one-session-at-a-time can be changed per user in their profile.</p>
+      <form class="limits-grid" id="limits-form">
+        <label for="l-trial">Free trial for new accounts (minutes)<input id="l-trial" name="trial_minutes" type="number" min="0" step="1"></label>
+        <label for="l-session">Longest session (hours)<input id="l-session" name="max_session_hours" type="number" min="0.25" max="24" step="0.25"></label>
+        <label for="l-daily">Hours per user per day (0 = no limit)<input id="l-daily" name="daily_hours" type="number" min="0" step="0.5"></label>
+        <label for="l-gpus">Most GPUs running at once<input id="l-gpus" name="max_gpus" type="number" min="0" max="50" step="1"></label>
+        <label for="l-grace">GPU stops after nobody streams for (minutes)<input id="l-grace" name="idle_grace_minutes" type="number" min="1" max="240" step="1"></label>
+        <label class="check" for="l-single"><input id="l-single" name="single_session" type="checkbox"> One live session per user (a new Start ends the old one)</label>
+        <label class="check" for="l-signups"><input id="l-signups" name="signups_open" type="checkbox"> Anyone can create an account (off: existing users and invite codes only)</label>
+        <div class="actions"><button class="btn primary" type="submit">Save the limits</button></div>
+      </form>
+    </div>
+
+    <div class="box" id="invites">
       <h2>Invite codes</h2>
       <form class="form-row" id="invite">
         <label for="inv-hours">Hours on the code<input id="inv-hours" type="number" min="0.5" max="100" step="0.5" value="3" required></label>
@@ -16,24 +58,24 @@
         <button class="btn primary" type="submit">Create the code</button>
       </form>
       <p class="notice good" id="inv-new" hidden></p>
-      <div class="table-scroll"><table><thead><tr><th>Code</th><th>Hours</th><th>Used</th><th>Redeem by</th><th>State</th><th></th></tr></thead><tbody id="invites"></tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>Code</th><th>Hours</th><th>Used</th><th>Redeem by</th><th>State</th><th></th></tr></thead><tbody id="invite-rows"></tbody></table></div>
     </div>
 
-    <div class="box">
-      <h2>Users</h2>
-      <div class="table-scroll"><table><thead><tr><th>User</th><th>Balance</th><th>Last seen</th><th>Give or take hours</th><th></th></tr></thead><tbody id="users"></tbody></table></div>
-    </div>
-
-    <div class="box">
+    <div class="box" id="payments">
       <h2>Payments</h2>
-      <div class="table-scroll"><table><thead><tr><th>Date</th><th>User</th><th>Pack</th><th>Amount</th><th>State</th></tr></thead><tbody id="orders"></tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>Date</th><th>User</th><th>Package</th><th>Amount</th><th>State</th></tr></thead><tbody id="order-rows"></tbody></table></div>
     </div>
 
-    <div class="box">
+    <div class="box" id="gpus">
       <h2>GPUs</h2>
       <p class="muted" id="pool-note"></p>
       <div class="table-scroll"><table><thead><tr><th>GPU</th><th>State</th><th>Users</th><th>Load</th><th>US$ per hour</th></tr></thead><tbody id="nodes"></tbody></table></div>
       <div class="actions"><button class="btn danger" id="stop-idle" type="button">Stop idle GPUs now</button></div>
+    </div>
+
+    <div class="box" id="audit">
+      <h2>Audit log</h2>
+      <div class="table-scroll"><table><thead><tr><th>When</th><th>Admin</th><th>Action</th><th>On</th><th>Details</th></tr></thead><tbody id="audit-rows"></tbody></table></div>
     </div>
   </div>
 </section>

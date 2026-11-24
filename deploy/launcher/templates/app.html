@@ -22,19 +22,22 @@
           <p class="notice bad" id="start-error" role="alert" hidden></p>
           <div class="actions"><button class="btn primary big" id="start" type="button" {% if user.balance_s <= 0 %}disabled{% endif %}>Start the studio</button>
             <button class="btn ghost big" id="cancel" type="button" hidden>Cancel</button></div>
-          {% if user.balance_s <= 0 %}<p class="small muted" id="need-hours">Buy an hour pack or redeem a code to start.</p>{% endif %}
+          {% if user.balance_s <= 0 %}<p class="small muted" id="need-hours">Buy an hour package or redeem a code to start.</p>{% endif %}
+          <p class="small muted" id="daily-left" hidden></p>
+          {% if user.disabled %}<p class="notice bad">This account is blocked, so it can't start the studio. Contact support if you think this is a mistake.</p>{% endif %}
         </div>
 
         <div class="box">
-          <h2>Hour packs</h2>
+          <h2>Hour packages</h2>
           {% if test_mode %}<p class="notice test">Test mode: payments use Razorpay's test cards and UPI ids. No real money moves.</p>{% endif %}
           {% if pay_problem %}<p class="notice bad">{{ pay_problem }}</p>{% endif %}
           <div class="pack-row">
             {% for p in packs %}
             <div class="pack">
-              <b>{{ p.label }}</b>
-              <span class="muted">{{ p.price_inr|inr }}</span>
-              <button class="btn {{ 'primary' if loop.index == 2 else 'ghost' }} wide buy" type="button" data-pack="{{ p.id }}" {% if pay_problem %}disabled{% endif %}>Buy {{ p.label }}</button>
+              {% if p.popular %}<span class="badge">Most bought</span>{% endif %}
+              <b>{{ p.name }}</b>
+              <span class="muted">{{ p.price_inr|inr }} · {{ p.hours|hours }}{% if p.validity_days %} · use within {{ p.validity_days }} days{% endif %}</span>
+              <button class="btn {{ 'primary' if p.popular else 'ghost' }} wide buy" type="button" data-pack="{{ p.id }}" {% if pay_problem %}disabled{% endif %}>Buy {{ p.name }}</button>
             </div>
             {% endfor %}
           </div>

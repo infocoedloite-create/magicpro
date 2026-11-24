@@ -196,12 +196,12 @@ def test_invites_admin_and_origin():
     admin.post("/api/admin/invite/revoke", json={"code": inv2["code"]})
     assert "withdrawn" in user2.post("/api/redeem", json={"code": inv2["code"]}).json()["detail"]
     inv3 = admin.post("/api/admin/invite", json={"hours": 4, "valid_hours": 1, "max_uses": 5}).json()
-    app.state.store.invites[inv3["code"]]["expires"] = time.time() - 1
+    app.state.store.b.data["invites"][inv3["code"]]["expires"] = time.time() - 1
     assert "expired" in user2.post("/api/redeem", json={"code": inv3["code"]}).json()["detail"]
     assert admin.post("/api/admin/grant", json={"sub": "u2", "hours": 1.5, "note": "welcome"}).status_code == 200
     assert user2.get("/api/me").json()["balance_s"] == 5400
-    ov = admin.get("/api/admin/overview").json()
-    assert {u["email"] for u in ov["users"]} == {"admin@example.com", "user@example.com", "user2@example.com"}
+    users = admin.get("/api/admin/users").json()["users"]
+    assert {u["email"] for u in users} == {"admin@example.com", "user@example.com", "user2@example.com"}
     # cross-site POSTs are refused even with the cookie
     assert user.post("/api/redeem", json={"code": "X"}, headers={"Origin": "https://evil.example"}).status_code == 403
     # pause, then data deletion

@@ -167,28 +167,62 @@ JSON key base64-encoded, saved as secret `pool-image-login` with the value
 * `/` marketing page, `/terms`, `/privacy`, `/acceptable-use` (**drafts for a lawyer**, marked on the page)
 * Google sign-in (`/login`, `/auth/callback`), account page `/app`: balance, hour packs, Start, invite
   code, history
-* Razorpay hour packs: order created server-side, Checkout in the page, signature checked
+* Razorpay hour packages: order created server-side, Checkout in the page, signature checked
   server-side (`/api/pay/verify`), and the `payment.captured` / `order.paid` webhook
   (`/api/pay/webhook`). Hours are credited once per order, whichever arrives first.
-* `/admin` for e-mails in `ADMIN_EMAILS`: users and balances, give or take hours, pause or delete
-  a user, invite codes worth N hours that must be redeemed within N hours (`/invite/<code>` links),
-  withdraw codes, payments, GPUs
+* `/admin` for admins (see **Admin** below): overview, users, packages, limits, invite codes,
+  payments, GPUs and an audit log
 * GPU handoff exactly as `docs/handoff-contract.md`: Start → a ready node from the pool (or "Starting
   GPU…" while one boots) → HS256 token → `{gpu_base}/session?t=…`; usage reports at
   `/api/gpu/usage` charge only the increase of `total_seconds` per `sid`. `MAGIC_SESSION_SECRET` is
   used as the HMAC key as stored (its UTF-8 bytes), for the token and for the report signature.
-* Data in Firestore (`users`, `ledger`, `orders`, `sessions`, `invites`).
+* Data in Firestore (`users`, `ledger`, `orders`, `sessions`, `invites`, `packages`, `config`,
+  `stats`, `audit`). All rules are in `store.Store`; Firestore only runs its transactions.
+
+The website is always on (Cloud Run scales it to zero between visits and wakes it for the next
+one), so anyone can visit, sign up and buy at any time. A GPU runs only while someone streams: Start
+wakes one, and it stops itself once nobody has streamed for the idle time set under Limits.
 
 **Payments stay in test mode.** `RAZORPAY_MODE` defaults to `test` and then only accepts
 `rzp_test_` keys. Live payments need `RAZORPAY_MODE=live`, a `rzp_live_` key **and**
 `RAZORPAY_LIVE_CONFIRM` set to the exact sentence in `deploy/launcher/payments.py`. Don't do that
 before you have a commercial licence for the face-swap model (the current one is non-commercial).
-Pack sizes and prices: `PACKS='[{"id":"h3","hours":3,"price_inr":499},…]'`; the defaults (₹499 /
-₹799 / ₹1,499 for 3 / 5 / 10 h) are placeholders.
+
+#### Admin
+
+Admins are the e-mails in `ADMIN_EMAILS` (owners: they can't be blocked or demoted from the page)
+plus anyone an admin marks as admin. Everything an admin changes is written to the audit log.
+
+* **Overview:** people streaming now, GPUs running and their price per hour, GPU cost today and this
+  month (the Vast hourly price × the time the website saw each GPU running), hours sold and used
+  today and this month, revenue (marked **test** while payments are in test mode). Days are India
+  time.
+* **Users:** search by name or e-mail; a profile shows sign-up date, balance, hours used in total
+  and today, expiring hours, payments, sessions and the admin actions on that user. Give or take
+  hours (a note is required), block or unblock (a blocked user can't start, and a live session
+  ends at its next usage report, within about 30 s), make or remove admin, per-user limits, delete
+  all data.
+* **Packages:** name, hours, price in ₹, "popular" badge, optional "use within N days" (those hours
+  expire N days after purchase; expiring hours are spent first), on sale or not, order. The home
+  page and the Buy screen show the packages on sale. An order keeps its own copy of hours, price
+  and validity, so editing a package never changes orders already made or paid. On the first start
+  the packages come from `PACKS` (defaults ₹499 / ₹799 / ₹1,499 for 3 / 5 / 10 h, placeholders).
+* **Limits** (everyone; the first three can be overridden per user):
+
+  | Limit | Default | Enforced |
+  |---|---|---|
+  | Longest session | 4 h | token `exp` = the smallest of balance, this, and what's left today |
+  | Hours per user per day | 0 (none) | Start refuses; usage report answers `stop: true` when reached |
+  | One live session per user | on | a new Start ends the old `sid` (`stop: true` at its next report) |
+  | Free trial for new accounts | 0 min | credited once at sign-up |
+  | Anyone can create an account | on | off: only existing users, owners and people arriving with a valid invite link |
+  | Most GPUs running at once | 5 | the pool cap (replaces `POOL_MAX_NODES` once saved) |
+  | GPU stops after nobody streams for | 10 min | sent to every node in the heartbeat reply |
 
 Offline tests (fake Google, fake Razorpay, simulated Vast):
 
 ```bash
+python deploy/launcher/test_admin.py   # blocked user, daily cap, session cap, single session, signups closed, packages vs paid orders, validity, roles, overview, pool limits
 python deploy/launcher/test_web.py && python deploy/launcher/test_pool.py
 ```
 

@@ -143,6 +143,9 @@ class Pool:
         self.last_refresh = 0.0
         self.note = ""                # last scaling message, shown in the pool view
         self.lock = asyncio.Lock()
+        self.grace_s = None           # idle grace handed to nodes in the heartbeat reply (website limit)
+        self.cost_cb = None           # called with (usd, seconds) about once a minute while GPUs bill
+        self._cost_t, self._cost_usd, self._cost_s = None, 0.0, 0.0
 
     # ----- state -----
     async def refresh(self, force=False):
@@ -246,7 +249,30 @@ class Pool:
         n.bad_until = 0.0
         # keep = don't let the grace period stop this node: users are on their way, or it is warm
         keep = self.reserved(n) > 0 or n.id in self._warm_set()
-        return {"keep": keep, "t": self.clock()}
+        reply = {"keep": keep, "t": self.clock()}
+        if self.grace_s is not None:
+            reply["grace_s"] = self.grace_s
+        return reply
+
+    def billing_per_hour(self) -> float:
+        return sum(float(n.inst.get("dph_total") or 0) for n in self.nodes.values()
+                   if self.state(n) in ("ready", "booting", "unhealthy", "stopping"))
+
+    def account_cost(self, flush_every=60.0, max_gap=120.0):
+        """Add GPU cost since the last call (gaps over max_gap are not counted: the website saw no
+        traffic, so nothing was known to run). Calls cost_cb about once a minute."""
+        now = self.clock()
+        if self._cost_t is not None:
+            dt = min(max(0.0, now - self._cost_t), max_gap)
+            rate = self.billing_per_hour()
+            if rate:
+                self._cost_usd += rate * dt / 3600
+                self._cost_s += dt
+        self._cost_t = now
+        if self.cost_cb and self._cost_s >= flush_every:
+            usd, secs = self._cost_usd, self._cost_s
+            self._cost_usd = self._cost_s = 0.0
+            self.cost_cb(usd, secs)
 
     def _warm_set(self):
         if self.cfg.min_warm <= 0:
@@ -324,6 +350,7 @@ class Pool:
             except RuntimeError as e:
                 self.note = str(e)
                 return []
+            self.account_cost()
             acts = self.plan()
             for a in acts:
                 try:

@@ -9,7 +9,7 @@
   }
   const show = (el, text, kind) => { el.hidden = !text; el.textContent = text || ""; if (kind) el.className = `notice ${kind}`; };
   const when = (t) => new Date(t * 1000).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-  const kinds = { purchase: "Hour pack", grant: "From the team", invite: "Invite code" };
+  const kinds = { purchase: "Hour package", grant: "From the team", invite: "Invite code", trial: "Free trial" };
 
   function row(cells) {
     const tr = document.createElement("tr");
@@ -19,7 +19,9 @@
   async function refresh() {
     const me = await call("/api/me");
     $("#balance").textContent = me.balance;
-    $("#start").disabled = me.balance_s <= 0;
+    $("#start").disabled = me.balance_s <= 0 || me.blocked;
+    const dl = $("#daily-left");
+    dl.hidden = !me.daily_left; dl.textContent = me.daily_left ? `Left today: ${me.daily_left} (daily limit).` : "";
     const need = $("#need-hours"); if (need) need.hidden = me.balance_s > 0;
     if (me.sessions.length) $("#sessions").replaceChildren(...me.sessions.map((s) => row([when(s.started), s.used])));
     if (me.ledger.length) $("#ledger").replaceChildren(...me.ledger.map((l) => row([when(l.t), kinds[l.kind] || l.kind, (l.hours > 0 ? "+" : "") + l.hours])));

@@ -258,6 +258,18 @@ class Watchdog:
         return reason, status
 
 
+def set_grace(value):
+    """The website's admin limit "idle grace" overrides MAGIC_IDLE_GRACE (0 = off; the dead-man still applies)."""
+    global GRACE
+    try:
+        g = float(value)
+    except (TypeError, ValueError):
+        return
+    if 0 <= g <= 24 * 3600 and g != GRACE:
+        log(f"idle grace set by the website: {g:.0f}s (was {GRACE:.0f}s)")
+        GRACE = g
+
+
 def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     pool = bool(LAUNCHER and NODE_KEY)
@@ -292,6 +304,7 @@ def main():
                 contact = time.time()
                 if reply.get("keep"):
                     keep_until = contact + KEEP_FOR
+                set_grace(reply.get("grace_s"))
         summary = (users, reachable, reason is not None, status["hold_s"] > 0, status["keep"])
         if summary != wd.last_log_state:
             log(f"users={users} app={'up' if reachable else 'DOWN'} idle={status['idle_s']}s "

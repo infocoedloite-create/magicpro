@@ -1,10 +1,10 @@
 // Home page: the time-left counter in the studio picture moves only while it shows "Live",
 // which is how billing works. It rests under reduced motion.
 (() => {
-  if (new URLSearchParams(location.search).get("signin") === "failed") {
-    const n = document.getElementById("signin-note");
-    if (n) n.hidden = false;
-  }
+  const signin = new URLSearchParams(location.search).get("signin");
+  const n = document.getElementById("signin-note");
+  if (n && signin === "failed") n.hidden = false;
+  if (n && signin === "closed") { n.hidden = false; n.textContent = "New accounts are by invitation right now. Open your invite link to join."; }
   const left = document.getElementById("m-left"), live = document.getElementById("m-live"), state = document.getElementById("m-state");
   if (!left || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   let secs = 2 * 3600 + 41 * 60, on = true, t = 0;

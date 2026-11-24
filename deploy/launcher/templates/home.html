@@ -5,7 +5,7 @@
 <section class="hero screen" data-enter>
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <p class="eyebrow">Hour packs from {{ min_price|inr }}</p>
+      <p class="eyebrow">{% if min_price %}Hour packs from {{ min_price|inr }}{% else %}Pay only for the time you stream{% endif %}</p>
       <h1>Live face swap for streamers and video calls</h1>
       <p class="lede">Pick a face you have the right to use, press Start, and your camera shows it live. Use it in OBS, Zoom, Meet or Teams, and pay only for the time you stream.</p>
       <div class="actions">
@@ -74,16 +74,21 @@
   <div class="wrap">
     <h2>Hour packs</h2>
     <p class="lede narrow">Time counts down only while your camera is streaming. Pause, close the tab or come back next week: unused hours stay on your account.</p>
-    <div class="cards {{ 'three' if packs|length == 3 else 'four' }}">
+    {% if packs %}
+    <div class="cards {{ 'three' if packs|length == 3 else ('two' if packs|length <= 2 else 'four') }}">
       {% for p in packs %}
-      <article class="card price{% if loop.index == 2 %} featured{% endif %}">
-        <h3>{{ p.label }}</h3>
+      <article class="card price{% if p.popular %} featured{% endif %}">
+        {% if p.popular %}<p class="badge">Most bought</p>{% endif %}
+        <h3>{{ p.name }}</h3>
         <p class="price-n">{{ p.price_inr|inr }}</p>
-        <p class="muted small">{{ (p.price_inr / p.hours)|round|int }} ₹ per hour of streaming</p>
-        <a class="btn {{ 'primary' if loop.index == 2 else 'ghost' }} wide" href="/login?next=/app">Buy {{ p.label }}</a>
+        <p class="muted small">{{ p.hours|hours }} of streaming · {{ (p.price_inr / p.hours)|round|int }} ₹ an hour{% if p.validity_days %} · use within {{ p.validity_days }} days{% endif %}</p>
+        <a class="btn {{ 'primary' if p.popular else 'ghost' }} wide" href="/login?next=/app">Buy {{ p.name }}</a>
       </article>
       {% endfor %}
     </div>
+    {% else %}
+    <p class="lede">New packages are on their way. Sign in to be ready when they open.</p>
+    {% endif %}
     <p class="small muted">Payments are handled by Razorpay.</p>
   </div>
 </section>
@@ -111,7 +116,7 @@
       <details><summary>Do I need a powerful computer?</summary><p>No. A laptop with a webcam and Chrome or Edge is enough; the face swap runs on our servers.</p></details>
       <details><summary>What internet speed do I need?</summary><p>A steady upload of about 8 Mbit/s for full HD. On slower links, lower the picture size in the studio.</p></details>
       <details><summary>Can I use it in Zoom, Meet or Teams?</summary><p>Yes, through OBS Virtual Camera: capture the studio window in OBS, start the virtual camera and choose it in your call app.</p></details>
-      <details><summary>Do hours expire?</summary><p>Bought hours stay on your account. An invite code has to be redeemed before the date shown on the invite.</p></details>
+      <details><summary>Do hours expire?</summary><p>Hours stay on your account unless the package says "use within" a number of days. An invite code has to be redeemed before the date shown on the invite.</p></details>
     </div>
   </div>
 </section>
