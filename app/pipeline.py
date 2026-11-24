@@ -131,6 +131,7 @@ class TrackState:
         self.miss = 0
         self.since_full = FULL_DETECT_EVERY
         self.outlines = []
+        self.lock = threading.Lock()
 
 
 def detect_tracked(detector, frame, s, track):
@@ -494,36 +495,39 @@ class Engine:
             return frame
         self.stats["swap_provider"] = swapper.provider
 
-        t0 = time.perf_counter()
-        faces = detect_tracked(self.detector, frame, s, track)
-        if faces:
-            track.last_faces, track.miss = faces, 0
-        elif track.last_faces and track.miss < s.hold_frames:
-            faces, track.miss = track.last_faces, track.miss + 1   # bridge brief misses on side views
-        faces = track.smoother(faces, s.smoothing)
-        t1 = time.perf_counter()
-
-        # face-shaped masks that follow each real jawline, and the real mouth, from 106 landmarks
-        # measured on the frame before swapping
         mouth_mode = s.mouth_keep if s.mouth_keep in ("inner", "lips") else ("lips" if s.mouth_mask else "off")
-        outlines, mouths = [None] * len(faces), [None] * len(faces)
         lm = self.landmarks if s.mask_mode == "face" else None
-        if lm is not None and faces:
-            outlines, mouths, all_pts = [], [], []
-            for i, f in enumerate(faces):
-                pts = lm.detect(frame, f.bbox)
-                prev = track.outlines[i] if i < len(track.outlines) else None
-                if prev is not None and prev.shape == pts.shape and s.smoothing > 0:
-                    # steady jitter only; real movement (jaw dropping while talking) passes through
-                    motion = float(np.abs(pts - prev).mean()) / max(f.size, 1.0)
-                    a = min(s.smoothing, 0.6) * float(np.clip(1.0 - motion * 40.0, 0.0, 1.0))
-                    sm = prev * a + pts * (1.0 - a)
-                    sm[52:72] = pts[52:72]                  # lips never smoothed: lip sync stays exact
-                    pts = sm.astype(np.float32)
-                all_pts.append(pts)
-                outlines.append(face_outline(pts, expand=s.face_mask_expand, chin=s.chin_extend))
-                mouths.append(mouth_polygon(pts, mouth_mode, s.mouth_size) if mouth_mode != "off" else None)
-            track.outlines = all_pts
+        # Tracking state is per stream and two frames of a stream may be in flight at once: the
+        # short tracking part runs under the stream's lock, the heavy swap/enhance part does not.
+        with track.lock:
+            t0 = time.perf_counter()
+            faces = detect_tracked(self.detector, frame, s, track)
+            if faces:
+                track.last_faces, track.miss = faces, 0
+            elif track.last_faces and track.miss < s.hold_frames:
+                faces, track.miss = track.last_faces, track.miss + 1   # bridge brief misses on side views
+            faces = track.smoother(faces, s.smoothing)
+            t1 = time.perf_counter()
+
+            # face-shaped masks that follow each real jawline, and the real mouth, from 106
+            # landmarks measured on the frame before swapping
+            outlines, mouths = [None] * len(faces), [None] * len(faces)
+            if lm is not None and faces:
+                outlines, mouths, all_pts = [], [], []
+                for i, f in enumerate(faces):
+                    pts = lm.detect(frame, f.bbox)
+                    prev = track.outlines[i] if i < len(track.outlines) else None
+                    if prev is not None and prev.shape == pts.shape and s.smoothing > 0:
+                        # steady jitter only; real movement (jaw dropping while talking) passes
+                        motion = float(np.abs(pts - prev).mean()) / max(f.size, 1.0)
+                        a = min(s.smoothing, 0.6) * float(np.clip(1.0 - motion * 40.0, 0.0, 1.0))
+                        sm = prev * a + pts * (1.0 - a)
+                        sm[52:72] = pts[52:72]              # lips never smoothed: lip sync stays exact
+                        pts = sm.astype(np.float32)
+                    all_pts.append(pts)
+                    outlines.append(face_outline(pts, expand=s.face_mask_expand, chin=s.chin_extend))
+                    mouths.append(mouth_polygon(pts, mouth_mode, s.mouth_size) if mouth_mode != "off" else None)
+                track.outlines = all_pts
 
         latent = swapper.latent(emb)
         size = swapper.output_size(boost)
