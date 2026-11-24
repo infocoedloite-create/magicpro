@@ -51,7 +51,7 @@ def open_encoder(width, height, fps, bitrate):
 
 
 class H264Session:
-    def __init__(self, engine, loop, send_bytes, send_text):
+    def __init__(self, engine, loop, send_bytes, send_text, space=None):
         self.engine = engine
         self.loop = loop
         self.send_bytes = send_bytes
@@ -65,7 +65,7 @@ class H264Session:
         self.last_processed_id = -1  # never let an older frame replace a newer one
         self.force_key = True
         from .pipeline import TrackState
-        self.track = TrackState()    # this user's own face tracking (has its own lock)
+        self.track = TrackState(space)   # this user's own face tracking, settings and library
         self.encoder = None
         self.encoder_name = ""
         self.t0 = time.perf_counter()
@@ -147,7 +147,8 @@ class H264Session:
                 self.decoded = None
             t = time.perf_counter()
             out = self.engine._safe_process(bgr, self.track)
-            self.engine._publish(out)
+            if self.track.space is None:      # hosted users' video never reaches the shared preview
+                self.engine._publish(out)
             self.engine.stats["latency_ms"] = round((time.perf_counter() - t) * 1000, 1)
             with self.enc_cond:
                 if fid > self.last_processed_id:        # a slower older frame is simply dropped
@@ -173,7 +174,7 @@ class H264Session:
 
     def _encode_send(self, fid, bgr):
         h, w = bgr.shape[:2]
-        s = self.engine.s
+        s = (self.track.space or self.engine.space).s
         if self.encoder is None or (self.encoder.width, self.encoder.height) != (w, h):
             bitrate = int(s.stream_bitrate_mbps * 1_000_000)
             self.encoder, self.encoder_name = open_encoder(w, h, s.fps, bitrate)

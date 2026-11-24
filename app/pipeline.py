@@ -128,7 +128,7 @@ FULL_DETECT_EVERY = 5      # full-frame detection every N frames; in between, on
 class TrackState:
     """Per-stream face tracking (smoothing + hold). Never shared between users."""
 
-    def __init__(self):
+    def __init__(self, space=None):
         self.smoother = KpsSmoother()
         self.last_faces = []
         self.last_seen = 0.0          # perf_counter() of the last frame a face was really detected
@@ -136,6 +136,7 @@ class TrackState:
         self.since_full = FULL_DETECT_EVERY
         self.outlines = []
         self.lock = threading.Lock()
+        self.space = space            # the user's settings + library (None = the local one)
 
     def tracking(self, now, window=1.0):
         return bool(self.last_faces) and now - self.last_seen < window
@@ -179,16 +180,107 @@ def detect_tracked(detector, frame, s, track, now):
     return faces if s.many_faces else faces[:1]
 
 
+# Settings a brand-new user starts with (measured best likeness and edges, 30+ fps at 720p)
+NEW_USER_SETTINGS = dict(
+    input_source="browser", resolution="720p", fps=30, swapper="inswapper_128_fp16", enhancer="gfpgan_1.4",
+    enhancer_blend=0.5, mask_mode="face", face_mask_expand=0.08, chin_extend=0.04, swap_zoom=0.9,
+    swap_passes=1, mask_blur=0.3, edge_detail=0.4, mouth_keep="inner", smoothing=0.5, det_thresh=0.5,
+    track_thresh=0.3, hold_ms=600, disclosure_label=True)
+
+
+class Space:
+    """One user's settings + face library (or the single shared one in local mode). Settings live
+    in a JSON file and are re-read when another worker process changes them."""
+
+    def __init__(self, settings_file, library_dir, tools, defaults=None):
+        self.settings_file = Path(settings_file)
+        self.settings_file.parent.mkdir(parents=True, exist_ok=True)
+        Path(library_dir).mkdir(parents=True, exist_ok=True)
+        self.s = Settings()
+        self._mtime = 0.0
+        self._checked = 0.0
+        if defaults and not self.settings_file.exists():
+            self.apply(defaults)
+        self.load()
+        self.library = FaceLibrary(Path(library_dir), tools)
+        self.pick_default_models()
+
+    def load(self):
+        if self.settings_file.exists():
+            try:
+                self._mtime = self.settings_file.stat().st_mtime
+                self.apply(json.loads(self.settings_file.read_text(encoding="utf-8")))
+            except Exception as e:  # noqa: BLE001
+                print(f"[settings] ignored broken {self.settings_file.name}: {e}")
+
+    def sync(self):
+        now = time.perf_counter()
+        if now - self._checked < 0.5:
+            return
+        self._checked = now
+        try:
+            if self.settings_file.stat().st_mtime != self._mtime:
+                self.load()
+        except FileNotFoundError:
+            pass
+        self.library.sync()
+
+    def pick_default_models(self):
+        sw = [m["id"] for m in list_swappers()]
+        if self.s.swapper not in sw:
+            pref = [m for m in ("inswapper_128_fp16", "inswapper_128") if m in sw]
+            self.s.swapper = pref[0] if pref else (sw[0] if sw else "")
+        en = [m["id"] for m in list_models(config.ENHANCERS)]
+        if self.s.enhancer and self.s.enhancer not in en:
+            self.s.enhancer = "gfpgan_1.4" if "gfpgan_1.4" in en else ""
+
+    def apply(self, patch):
+        changed = set()
+        types = {f.name: f.type for f in fields(Settings)}
+        for k, v in patch.items():
+            if k not in types:
+                continue
+            cur = getattr(self.s, k)
+            if isinstance(cur, bool):
+                v = v if isinstance(v, bool) else str(v).lower() in ("1", "true", "on", "yes")
+            elif isinstance(cur, int):
+                v = int(float(v))
+            elif isinstance(cur, float):
+                v = float(v)
+            elif isinstance(cur, list):
+                v = [str(x) for x in v]
+            else:
+                v = str(v)
+            if v != cur:
+                setattr(self.s, k, v)
+                changed.add(k)
+        if self.s.resolution not in RESOLUTIONS:
+            self.s.resolution = "1080p"
+        self.s.fps = int(np.clip(self.s.fps, 15, 60))
+        return changed
+
+    def save(self):
+        tmp = self.settings_file.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(asdict(self.s), indent=1), encoding="utf-8")
+        os.replace(tmp, self.settings_file)       # atomic: other workers never read half a file
+        self._mtime = self.settings_file.stat().st_mtime
+
+    def update(self, patch):
+        changed = self.apply(patch)
+        if changed:
+            self.save()
+        return changed
+
+
 class Engine:
     def __init__(self):
-        self.s = Settings()
-        self._settings_mtime = 0.0
-        self._settings_checked = 0.0
-        self._load_settings()
         self._lock = threading.RLock()
         self._det = self._rec = None
         self._swappers, self._enhancers = {}, {}
-        self.library = FaceLibrary(config.LIBRARY, lambda: (self.detector, self.recognizer))
+        tools = lambda: (self.detector, self.recognizer)  # noqa: E731
+        self._tools = tools
+        self.space = Space(config.SETTINGS_FILE, config.LIBRARY, tools)   # local / single-user mode
+        self._spaces = {}
 
         self.running = False
         self._stop = threading.Event()
@@ -207,7 +299,6 @@ class Engine:
         self.stats = {"fps": 0.0, "latency_ms": 0.0, "detect_ms": 0.0, "swap_ms": 0.0,
                       "enhance_ms": 0.0, "faces": 0, "camera": "", "output": "",
                       "swap_provider": "", "status": "idle", "error": "", "vcam": "off", "encoder": ""}
-        self._pick_default_models()
         STATS_DIR.mkdir(parents=True, exist_ok=True)
         threading.Thread(target=self._stats_writer, name="stats", daemon=True).start()
 
@@ -255,77 +346,42 @@ class Engine:
             out.pop(k, None)
         return out
 
-    # ---------- settings ----------
-    def _load_settings(self):
-        if config.SETTINGS_FILE.exists():
-            try:
-                self._settings_mtime = config.SETTINGS_FILE.stat().st_mtime
-                self._apply(json.loads(config.SETTINGS_FILE.read_text(encoding="utf-8")))
-            except Exception as e:  # noqa: BLE001
-                print(f"[settings] ignored broken settings.json: {e}")
+    # ---------- settings: the local space, or one space per signed-in user ----------
+    @property
+    def s(self):
+        return self.space.s
 
-    def sync(self):
-        """Pick up settings and library changes made by other worker processes (cheap: one stat
-        per file at most twice a second)."""
-        now = time.perf_counter()
-        if now - self._settings_checked < 0.5:
-            return
-        self._settings_checked = now
-        try:
-            m = config.SETTINGS_FILE.stat().st_mtime
-            if m != self._settings_mtime:
-                self._load_settings()
-        except FileNotFoundError:
-            pass
-        self.library.sync()
+    @property
+    def library(self):
+        return self.space.library
+
+    def space_for(self, user_key):
+        """Each signed-in user's own settings + face library under data/users/<key>/."""
+        if not user_key:
+            return self.space
+        with self._lock:
+            sp = self._spaces.get(user_key)
+            if sp is None:
+                root = config.DATA / "users" / user_key
+                sp = Space(root / "settings.json", root / "library", self._tools, defaults=NEW_USER_SETTINGS)
+                self._spaces[user_key] = sp
+            return sp
+
+    def sync(self, space=None):
+        (space or self.space).sync()
 
     def _pick_default_models(self):
-        sw = [m["id"] for m in list_swappers()]
-        if self.s.swapper not in sw:
-            pref = [m for m in ("inswapper_128_fp16", "inswapper_128") if m in sw]
-            self.s.swapper = pref[0] if pref else (sw[0] if sw else "")
-        en = [m["id"] for m in list_models(config.ENHANCERS)]
-        if self.s.enhancer and self.s.enhancer not in en:
-            self.s.enhancer = "gfpgan_1.4" if "gfpgan_1.4" in en else ""
+        self.space.pick_default_models()
 
-    def _apply(self, patch):
-        changed = set()
-        types = {f.name: f.type for f in fields(Settings)}
-        for k, v in patch.items():
-            if k not in types:
-                continue
-            cur = getattr(self.s, k)
-            if isinstance(cur, bool):
-                v = v if isinstance(v, bool) else str(v).lower() in ("1", "true", "on", "yes")
-            elif isinstance(cur, int):
-                v = int(float(v))
-            elif isinstance(cur, float):
-                v = float(v)
-            elif isinstance(cur, list):
-                v = [str(x) for x in v]
-            else:
-                v = str(v)
-            if v != cur:
-                setattr(self.s, k, v)
-                changed.add(k)
-        if self.s.resolution not in RESOLUTIONS:
-            self.s.resolution = "1080p"
-        self.s.fps = int(np.clip(self.s.fps, 15, 60))
-        return changed
-
-    def update(self, patch):
-        changed = self._apply(patch)
-        if changed & RESTART_KEYS and self.running:
+    def update(self, patch, space=None):
+        sp = space or self.space
+        changed = sp.update(patch)
+        if sp is self.space and changed & RESTART_KEYS and self.running:
             self._restart_cam.set()
-        if changed:
-            tmp = config.SETTINGS_FILE.with_suffix(f".{os.getpid()}.tmp")
-            tmp.write_text(json.dumps(asdict(self.s), indent=1), encoding="utf-8")
-            os.replace(tmp, config.SETTINGS_FILE)       # atomic: other workers never read half a file
-            self._settings_mtime = config.SETTINGS_FILE.stat().st_mtime
-        return asdict(self.s)
+        return asdict(sp.s)
 
-    def settings_dict(self):
-        return asdict(self.s)
+    def settings_dict(self, space=None):
+        return asdict((space or self.space).s)
 
     # ---------- models ----------
     @property
@@ -454,9 +510,10 @@ class Engine:
     def _safe_process(self, frame, track=None):
         """Thread-safe: several streams process concurrently (ONNX Runtime and OpenCV release the
         GIL), each with its own TrackState so faces never leak between users."""
-        self.sync()
+        track = track or self._camera_track
+        (track.space or self.space).sync()
         try:
-            out = self._process(frame, track or self._camera_track)
+            out = self._process(frame, track)
             self.stats.update(status="live", error="")
         except Exception as e:  # noqa: BLE001  keep the stream alive, show the error
             traceback.print_exc()
@@ -493,13 +550,15 @@ class Engine:
         if frame is None:
             return None
         out = self._safe_process(frame, track)
-        self._publish(out)
-        jpg = codec.encode(out, self.s.stream_quality)
+        if track is None or track.space is None:      # the shared preview never shows a user's stream
+            self._publish(out)
+        jpg = codec.encode(out, ((track.space if track else None) or self.space).s.stream_quality)
         self.stats["latency_ms"] = round((time.perf_counter() - t) * 1000, 1)
         return jpg
 
     def _process(self, frame, track):
-        s = self.s
+        space = track.space or self.space
+        s = space.s
         if s.mirror:
             frame = cv2.flip(frame, 1)
         w, h = RESOLUTIONS[s.resolution]
@@ -507,7 +566,7 @@ class Engine:
             frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
         self.stats["output"] = f"{w}x{h}"
 
-        emb = self.library.embedding(s.source_ids) if s.swap_enabled else None
+        emb = space.library.embedding(s.source_ids) if s.swap_enabled else None
         model_id, boost, preset_color = resolve_swapper(s.swapper)
         swapper = self._get(self._swappers, config.SWAPPERS, FaceSwapper, model_id) if emb is not None else None
         if swapper is None:

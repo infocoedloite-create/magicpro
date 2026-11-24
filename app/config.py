@@ -11,6 +11,7 @@ RECOGNIZER = MODELS / "w600k_r50.onnx"  # ArcFace R50 (insightface buffalo_l)
 TRT_CACHE = MODELS / ".trt_cache"
 LIBRARY = Path(os.environ.get("MAGIC_LIBRARY", ROOT / "library"))
 STATIC = ROOT / "static"
+DATA = Path(os.environ.get("MAGIC_DATA", ROOT / "data"))   # per-user spaces (hosted mode)
 SETTINGS_FILE = Path(os.environ.get("MAGIC_SETTINGS", ROOT / "settings.json"))
 
 GPU_ID = int(os.environ.get("MAGIC_GPU", "0"))

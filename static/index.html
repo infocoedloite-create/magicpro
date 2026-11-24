@@ -14,8 +14,13 @@
   <header class="top">
     <div class="brand"><span class="mark" aria-hidden="true"></span>Magic Pro</div>
     <div class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="status-text">Idle</span></div>
+    <div class="account" id="account" hidden>
+      <span class="time-left" id="time-left" title="Time left in this session"></span>
+      <span class="who" id="acct-name"></span>
+    </div>
     <div class="top-actions">
-      <a class="btn ghost" href="/video.mjpg?full=1" target="_blank" rel="noopener">Open full-res feed</a>
+      <a class="btn ghost hosted-only" id="acct-back" href="#">My account</a>
+      <a class="btn ghost local-only" href="/video.mjpg?full=1" target="_blank" rel="noopener">Open full-res feed</a>
       <button class="btn primary" id="toggle" type="button">Start camera</button>
     </div>
   </header>
@@ -35,10 +40,10 @@
       <dl class="meters" aria-label="Performance">
         <div><dt>FPS</dt><dd id="m-fps">0</dd></div>
         <div><dt>Round trip</dt><dd id="m-rtt">–</dd></div>
-        <div><dt>GPU server</dt><dd id="m-lat">0 ms</dd></div>
-        <div><dt>Detect</dt><dd id="m-det">0 ms</dd></div>
-        <div><dt>Swap</dt><dd id="m-swap">0 ms</dd></div>
-        <div><dt>Enhance</dt><dd id="m-enh">0 ms</dd></div>
+        <div class="local-only"><dt>GPU server</dt><dd id="m-lat">0 ms</dd></div>
+        <div class="local-only"><dt>Detect</dt><dd id="m-det">0 ms</dd></div>
+        <div class="local-only"><dt>Swap</dt><dd id="m-swap">0 ms</dd></div>
+        <div class="local-only"><dt>Enhance</dt><dd id="m-enh">0 ms</dd></div>
       </dl>
       <p class="facts" id="facts"></p>
       <p class="error" id="error" role="alert" hidden></p>
@@ -108,7 +113,7 @@
 
       <section class="group" aria-labelledby="h-cam">
         <div class="group-head"><h2 id="h-cam">Camera and output</h2></div>
-        <label class="field"><span>Webcam input</span>
+        <label class="field local-only"><span>Webcam input</span>
           <select data-key="input_source" id="sel-source">
             <option value="browser">This browser's webcam (remote GPU)</option>
             <option value="server">Camera plugged into the GPU machine</option>
@@ -134,7 +139,7 @@
         <label class="switch"><input type="checkbox" data-key="mirror"><span>Mirror image</span></label>
         <label class="switch server-only"><input type="checkbox" data-key="virtual_cam"><span>Send to virtual camera (OBS, Zoom, browsers)</span></label>
         <p class="hint browser-only">For streaming: press the full-screen button on the output, then capture this window in OBS (Window Capture) and use OBS Virtual Camera for Zoom or Meet.</p>
-        <label class="switch"><input type="checkbox" data-key="disclosure_label"><span>Show "AI face swap" label on output</span></label>
+        <label class="switch local-only"><input type="checkbox" data-key="disclosure_label"><span>Show "AI face swap" label on output</span></label>
         <label class="range"><span>Preview JPEG quality <output></output></span><input type="range" data-key="preview_quality" min="40" max="95" step="5"></label>
       </section>
     </aside>

@@ -51,7 +51,8 @@ X-Magic-Signature: hex(hmac_sha256(MAGIC_SESSION_SECRET, raw_request_body))
 {"sid": "...", "sub": "...", "total_seconds": 1234.5, "streaming": true, "ts": 1764000000}
 ```
 
-`total_seconds` is the **cumulative** streamed time of that `sid`. The website charges only the
+`total_seconds` is the **cumulative** streamed time of that `sid`: time during which video frames
+were actually arriving (a frame within the last 2 s), not merely connected time. The website charges only the
 increase since the last report it accepted for that `sid` (idempotent, survives lost or repeated
 reports) and answers:
 

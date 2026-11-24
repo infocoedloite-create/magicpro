@@ -1,14 +1,52 @@
 const $ = (s) => document.querySelector(s);
 let state = null;
+let me = null;          // hosted mode: the signed-in user's session ({hosted, name, remaining, web_url})
 
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
   const body = await r.json().catch(() => ({}));
+  if (r.status === 401 && body.web_url) { location.href = body.web_url; throw new Error("signed out"); }
   if (!r.ok) throw new Error(body.detail || r.statusText);
   return body;
 }
 const post = (path, data) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data ?? {}) });
-const source = () => state?.settings.input_source || "browser";
+const source = () => (me?.hosted ? "browser" : state?.settings.input_source || "browser");
+
+function fmtLeft(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h} h ${String(m).padStart(2, "0")} min left` : `${m}:${String(s).padStart(2, "0")} left`;
+}
+
+function renderAccount(remaining) {
+  if (!me?.hosted) return;
+  const el = $("#time-left");
+  el.textContent = fmtLeft(remaining);
+  el.classList.toggle("low", remaining < 600);
+}
+
+function endSession(reason, webUrl) {
+  stopBrowser();
+  renderRunning(state);
+  const note = $("#error");
+  note.hidden = false;
+  note.className = "end-note";
+  note.innerHTML = "";
+  note.append(document.createTextNode(`${reason || "Your session has ended."} `));
+  const a = Object.assign(document.createElement("a"), { href: webUrl || me?.web_url || "/", textContent: "Add hours or start a new session" });
+  note.append(a);
+}
+
+async function loadMe() {
+  me = await api("/api/me").catch(() => ({ hosted: false }));
+  document.body.dataset.hosted = me.hosted ? "1" : "0";
+  if (me.hosted) {
+    $("#account").hidden = false;
+    $("#acct-name").textContent = me.name || me.email || "";
+    $("#acct-back").href = me.web_url;
+    renderAccount(me.remaining);
+  }
+}
 
 function fmt(el) {
   const v = parseFloat(el.value);
@@ -136,7 +174,11 @@ async function startH264() {
 
   ws.onmessage = (e) => {
     if (typeof e.data === "string") {
-      try { if (JSON.parse(e.data).t === "kf") needKey = true; } catch { /* ignore */ }
+      try {
+        const m = JSON.parse(e.data);
+        if (m.t === "kf") needKey = true;
+        if (m.t === "end") endSession(m.reason, m.web_url);
+      } catch { /* ignore */ }
       return;
     }
     const dv = new DataView(e.data);
@@ -150,8 +192,11 @@ async function startH264() {
     try { bs.decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: id, data: new Uint8Array(e.data, 6) })); }
     catch { decReady = false; ws.send('{"t":"kf"}'); }
   };
-  ws.onclose = () => { if (bs.running) { stopBrowser(); showError("The connection to the GPU server closed. Press Start camera to reconnect."); } };
-  await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = () => fail(new Error("Could not connect to the GPU server.")); });
+  ws.onclose = (e) => {
+    if (e.code === 4401) { location.href = me?.web_url || "/"; return; }       // session gone: sign in again
+    if (bs.running) { stopBrowser(); showError("The connection to the server closed. Press Start camera to reconnect."); }
+  };
+  await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = () => fail(new Error("Could not connect to the server.")); });
 
   bs.running = true;
   const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
@@ -191,6 +236,10 @@ async function startJpeg(w, h) {
   ws.binaryType = "arraybuffer";
   bs.ws = ws;
   ws.onmessage = async (e) => {
+    if (typeof e.data === "string") {
+      try { const m = JSON.parse(e.data); if (m.t === "end") endSession(m.reason, m.web_url); } catch { /* ignore */ }
+      return;
+    }
     const id = new DataView(e.data).getUint32(0, true);
     const t = bs.sent.get(id);
     if (t) {
@@ -317,6 +366,8 @@ function bindControls() {
 
 function showError(msg) {
   const e = $("#error");
+  if (e.className === "end-note" && !msg) return;      // keep the "session ended" note visible
+  e.className = "error";
   e.hidden = !msg;
   e.textContent = msg || "";
 }
@@ -340,10 +391,15 @@ function renderStats(s) {
   $("#m-det").textContent = `${s.detect_ms ?? 0} ms`;
   $("#m-swap").textContent = `${s.swap_ms ?? 0} ms`;
   $("#m-enh").textContent = `${s.enhance_ms ?? 0} ms`;
-  const facts = [`faces ${s.faces ?? 0}`, bs.running && bs.mode && `stream ${bs.mode}${s.encoder ? " · " + s.encoder : ""}`, source() === "server" && s.camera && `camera ${s.camera}`, s.output && `output ${s.output}`,
-    s.swap_provider && s.swap_provider.replace("ExecutionProvider", ""), source() === "server" && s.vcam && `virtual cam: ${s.vcam}`].filter(Boolean);
+  const facts = me?.hosted ? [s.output && `output ${s.output}`].filter(Boolean)
+    : [`faces ${s.faces ?? 0}`, bs.running && bs.mode && `stream ${bs.mode}${s.encoder ? " · " + s.encoder : ""}`, source() === "server" && s.camera && `camera ${s.camera}`, s.output && `output ${s.output}`,
+      s.swap_provider && s.swap_provider.replace("ExecutionProvider", ""), source() === "server" && s.vcam && `virtual cam: ${s.vcam}`].filter(Boolean);
   $("#facts").textContent = facts.join("  ·  ");
   if (s.error) showError(s.error);
+  if (me?.hosted && s.remaining !== undefined) {
+    renderAccount(s.remaining);
+    if (s.stop && bs.running) endSession(s.stop, me.web_url);
+  }
   renderRunning(s);
 }
 
@@ -467,4 +523,4 @@ setInterval(async () => {
 
 bindControls();
 bindUpload();
-load().then(switchSource).catch((e) => showError(e.message));
+loadMe().then(load).then(switchSource).catch((e) => showError(e.message));
