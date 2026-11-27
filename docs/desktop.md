@@ -12,12 +12,17 @@ GPU-pool controls are switched off in the desktop app). The internet is used onl
 check, updates, and the one-time downloads at install. The installer sets up everything the program
 needs: the GPU runtime, the face models, the Microsoft C++ runtime, and optionally OBS Studio.
 
-**Two websites.** The desktop app talks to its own site, **`magicpro-desk.nacgenai.in`** (keys,
-activation, sign-in codes, downloads, updates). Buying or renewing a subscription opens the existing
-**`magicpro.nacgenai.in`** site, so all payments keep going through the one payment gateway
-(Razorpay) already set up there. Both are the same codebase deployed as two Cloud Run services that
-share the same Firestore data and secrets; `desktop/desktop.json` holds `server`
-(magicpro-desk.nacgenai.in) and `buy_url` (magicpro.nacgenai.in).
+**One admin, two front doors.** Both are the same code, deployed as two Cloud Run services that
+share one Firestore, one set of secrets, one Google sign-in (OAuth client) and one Razorpay gateway:
+
+| Service | Domain | What it's for |
+|---|---|---|
+| `magicpro-web` | **`magicpro.nacgenai.in`** | the public site, payments, and **the one admin dashboard** for everything: streaming users, packages, GPUs *and* **Desktop keys** (create keys, add days, move PCs, publish releases). Its **Desktop app** link sends people to the desktop site's download page (`DESKTOP_DOWNLOAD_URL`). |
+| `magicpro-desk` | **`magicpro-desk.nacgenai.in`** | what the desktop app talks to: activation with e-mail codes, licence renewal, updates, and the installer download page. |
+
+Keys created on the `magicpro.nacgenai.in` admin page work in the desktop app straight away
+(shared Firestore). Buy/Renew in the app opens `magicpro.nacgenai.in` (`buy_url` in
+`desktop/desktop.json`), so payments stay on the one gateway.
 
 The face-swap code (`app/`, `static/`) is unchanged. `desktop/` wraps it.
 
@@ -33,7 +38,7 @@ MagicPro.exe ─► python\pythonw.exe -m desktop
 
 ## How the licence works
 
-1. **Keys.** An admin creates keys on the admin page (**Desktop keys**): how many, how many days,
+1. **Keys.** An admin creates keys on the admin page at `magicpro.nacgenai.in/admin` (**Desktop keys**): how many, how many days,
    a plan name, optionally the only e-mail address allowed to use them. Keys look like
    `MPRO-7KQ2M-XW9HD-R4TNB-3CFZA`. The days start counting at the first activation.
 2. **Activation.** The customer types the key and their e-mail address in the program and
@@ -96,19 +101,27 @@ account**. Customers see their keys and PCs on `/download` when signed in.
    secret **`smtp-password`** and deploy with
    `SMTP_HOST=… SMTP_PORT=587 SMTP_USER=… MAIL_FROM="Magic Pro <no-reply@nacgenai.in>"` set
    (port 465 means SSL). Cloud Run allows ports 587 and 465. The admin page says if mail isn't set up.
-5. **Deploy the desktop site at its own domain** `magicpro-desk.nacgenai.in`, as a second Cloud Run
-   service that shares the same secrets and Firestore (so keys, users and the Razorpay gateway are
-   the one set). From the repository root in Cloud Shell:
+5. **Both services are deployed** (project magicprov2, asia-southeast1): `magicpro-web` got the new
+   code with its live settings kept, plus `DESKTOP_LICENSE_KEY`, `DESKTOP_RELEASE_PUBKEY` and
+   `DESKTOP_DOWNLOAD_URL`; `magicpro-desk` is new, with Gmail SMTP for the codes and the domain
+   mapping for `magicpro-desk.nacgenai.in`. Still to do by hand:
+   * GoDaddy (DNS for nacgenai.in): `CNAME` `magicpro-desk` → `ghs.googlehosted.com.`
+   * the Gmail app password as the real value of the `smtp-password` secret (until then the codes
+     can't be sent): `gcloud secrets versions add smtp-password --project magicprov2 --data-file=<file>`
+   * OAuth client → Authorized redirect URIs: add `https://magicpro-desk.nacgenai.in/auth/callback`,
+     so "Sign in" on the desktop site works too (admin work happens on `magicpro.nacgenai.in`, whose
+     sign-in already works).
 
-   ```bash
-   SERVICE=magicpro-desk DOMAIN=magicpro-desk.nacgenai.in      GOOGLE_CLIENT_ID=<client id> RAZORPAY_KEY_ID=<rzp_…> ADMIN_EMAILS=<you>      SMTP_HOST=<host> SMTP_USER=<user> MAIL_FROM="Magic Pro <no-reply@nacgenai.in>"      bash deploy/launcher/deploy-magicprov2.sh deploy
-   SERVICE=magicpro-desk DOMAIN=magicpro-desk.nacgenai.in bash deploy/launcher/deploy-magicprov2.sh domain
-   ```
+**Shipping new code later** (both services at once, every env var and secret kept):
 
-   Add `https://magicpro-desk.nacgenai.in/auth/callback` to the OAuth client's redirect URIs, and a
-   GoDaddy `CNAME` `magicpro-desk` → `ghs.googlehosted.com.`. Payments still happen on
-   `magicpro.nacgenai.in`: the desktop app's Buy/Renew button opens it (`buy_url`), and both
-   services use the same Razorpay secrets, so there is one gateway and one payment account.
+```bash
+bash deploy/launcher/deploy-magicprov2.sh redeploy
+```
+
+Don't use `deploy` for existing services: it resets every env var (it would put the live site's
+payments in test mode), so it now refuses to run on a service that already exists. To change one
+setting: `gcloud run services update <service> --project magicprov2 --region asia-southeast1
+--update-env-vars KEY=value` (or `--update-secrets`).
 
 ## Build
 

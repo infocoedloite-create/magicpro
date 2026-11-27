@@ -47,6 +47,9 @@ class Settings:
     admin_emails: set = field(default_factory=lambda: {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()})
     support_email: str = os.environ.get("SUPPORT_EMAIL", "")
     brand: str = os.environ.get("BRAND_NAME", "Magic Pro")
+    # where the "Desktop app" nav link goes. On the main site set this to the desktop site's download
+    # page (DESKTOP_DOWNLOAD_URL); on the desktop site itself leave it as the local /download.
+    desktop_url: str = os.environ.get("DESKTOP_DOWNLOAD_URL", "/download")
 
     @property
     def secure_cookies(self):

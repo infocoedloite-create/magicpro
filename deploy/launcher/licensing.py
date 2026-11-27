@@ -455,7 +455,10 @@ class Mailer:
     SMTP_USER, SMTP_PASSWORD (secret), MAIL_FROM ("Magic Pro <no-reply@your-domain>")."""
 
     def __init__(self, host="", port=587, user="", password="", sender=""):
-        self.host, self.port, self.user, self.password, self.sender = host, int(port or 587), user, password, sender
+        self.host, self.port, self.user, self.sender = host.strip(), int(port or 587), user.strip(), sender.strip()
+        # tolerate a secret saved with a UTF-8 BOM or trailing newline, and the spaces Gmail shows in
+        # its 16-character app passwords (SMTP app passwords never contain spaces)
+        self.password = password.replace("﻿", "").strip().replace(" ", "")
 
     @classmethod
     def from_env(cls):
