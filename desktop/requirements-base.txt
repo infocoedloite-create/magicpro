@@ -1,0 +1,7 @@
+# Bundled inside the installer (python\base): enough to show activation and run the first-run
+# setup before the GPU runtime is downloaded. Versions come from runtime.lock.
+fastapi
+uvicorn[standard]
+python-multipart
+cryptography
+pip

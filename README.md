@@ -53,6 +53,21 @@ builds engines for a few minutes, then they are cached):
 3. In OBS (or Zoom, Meet, Discord) choose **OBS Virtual Camera** as the video source. For an OBS
    browser source instead, use `http://127.0.0.1:7860/video.mjpg?full=1`.
 
+## Desktop app (Windows, subscription)
+
+`desktop/` packages the studio as a Windows program (`MagicPro-Setup-<version>.exe`) for the
+customer's own NVIDIA card (built for the RTX 5070). It opens straight into the studio, needs a
+subscription key that works on one PC and one e-mail address (sign-in with a 6-digit e-mail code),
+locks when the subscription ends,
+and installs signed updates from inside the program. Keys, activation and releases are managed on
+the website's admin page. The face-swap code is unchanged. Build, release and setup:
+[docs/desktop.md](docs/desktop.md).
+
+```powershell
+py -3.12 tools\desktop_keys.py      # once: signing keys
+.\desktop\build\build.ps1          # dist\MagicPro-Setup-<version>.exe
+```
+
 ## Run on a rented GPU (Vast.ai)
 
 Use the **NVIDIA CUDA** template (CUDA 12.8 or newer). Copy the project to `/workspace/magicpro`

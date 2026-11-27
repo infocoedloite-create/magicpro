@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Activate Magic Pro Desktop · {{ S.brand }}{% endblock %}
+{% block navlinks %}<a href="/download">Desktop app</a><a href="/app">Account</a>{% endblock %}
+{% block main %}
+<section class="page">
+  <div class="wrap stack" style="max-width:640px">
+    <div class="page-head"><h1>Activate Magic Pro Desktop</h1></div>
+    {% if not link %}
+      <div class="box stack">
+        <p class="notice bad">This activation request has expired or was already used.</p>
+        <p class="muted">Go back to Magic Pro on your PC and press <b>Activate</b> again. Each request is valid for 10 minutes.</p>
+      </div>
+    {% else %}
+      <div class="box stack" id="activate" data-link="{{ link_id }}">
+        <p>Signed in as <b>{{ user.email }}</b>. Check that this code matches the one Magic Pro shows on your PC:</p>
+        <p style="font:800 32px/1.2 var(--font);letter-spacing:.12em;font-variant-numeric:tabular-nums">{{ link.code[:4] }}-{{ link.code[4:] }}</p>
+        <dl class="small" style="display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0">
+          <dt class="muted">PC</dt><dd style="margin:0">{{ link.machine.name }}{% if link.machine.gpu %} · {{ link.machine.gpu }}{% endif %}</dd>
+          {% if lic %}
+          <dt class="muted">Subscription key</dt><dd style="margin:0">{{ lic.key }} · {{ lic.plan }}</dd>
+          <dt class="muted">Status</dt><dd style="margin:0">{% if lic.expires %}{{ lic.days_left }} days left{% else %}starts today, {{ lic.days|int }} days{% endif %}{% if lic.pc %} · active on {{ lic.pc }}{% endif %}</dd>
+          {% endif %}
+        </dl>
+        {% if not link.key %}
+          {% if own %}
+            <fieldset class="stack" style="border:0;padding:0;margin:0">
+              <legend class="small muted">Use one of your keys</legend>
+              {% for k in own %}
+              <label class="small"><input type="radio" name="own" value="{{ k.id }}" {% if loop.first %}checked{% endif %}> {{ k.key }} · {{ k.plan }} · {{ k.state }}{% if k.pc %} on {{ k.pc }}{% endif %}{% if k.days_left is not none %} · {{ k.days_left }} days left{% endif %}</label>
+              {% endfor %}
+              <label class="small"><input type="radio" name="own" value=""> A new key:</label>
+            </fieldset>
+          {% endif %}
+          <label>Subscription key<input id="key" autocomplete="off" spellcheck="false" placeholder="MPRO-XXXXX-XXXXX-XXXXX-XXXXX" maxlength="40"></label>
+        {% endif %}
+        <p class="small muted">One key works on one PC. After activation this key can't be used on another PC.</p>
+        <div class="form-row">
+          <button class="btn primary big" id="go" type="button">Activate on this PC</button>
+          <button class="btn ghost" id="deny" type="button">This isn't me</button>
+        </div>
+        <p class="notice" id="msg" role="status" hidden></p>
+      </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/desktop.js" defer></script>{% endblock %}

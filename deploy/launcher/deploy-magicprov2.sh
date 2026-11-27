@@ -17,17 +17,26 @@ cd "$(dirname "$0")/../.."
 
 PROJECT=magicprov2
 REGION=asia-southeast1          # Cloud Run domain mapping is not offered in asia-south1 (Mumbai)
-SERVICE=magicpro-web
+SERVICE="${SERVICE:-magicpro-web}"              # the desktop-licensing site: SERVICE=magicpro-desk
 SA_NAME=magicpro-web
 SA="$SA_NAME@$PROJECT.iam.gserviceaccount.com"
-DOMAIN=magicpro.nacgenai.in
-SECRETS=(magicpro-session-secret google-client-secret razorpay-key-secret razorpay-webhook-secret vast-api-key pool-secret)
+DOMAIN="${DOMAIN:-magicpro.nacgenai.in}"        # desktop-licensing site: DOMAIN=magicpro-desk.nacgenai.in
+SECRETS=(magicpro-session-secret google-client-secret razorpay-key-secret razorpay-webhook-secret vast-api-key pool-secret desktop-license-key smtp-password)
 
 # ---- your values (not secret) ----
 GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}"        # …apps.googleusercontent.com, from the OAuth client
 RAZORPAY_KEY_ID="${RAZORPAY_KEY_ID:-}"          # rzp_test_… (test mode only)
 ADMIN_EMAILS="${ADMIN_EMAILS:-}"                # your Google e-mail(s), comma separated
 SUPPORT_EMAIL="${SUPPORT_EMAIL:-}"              # shown in the footer and legal pages (optional)
+# Magic Pro Desktop sign-in codes are e-mailed over SMTP (Brevo, SendGrid, Resend, Zoho, SES or a
+# Gmail/Workspace app password); the password is the secret smtp-password
+SMTP_HOST="${SMTP_HOST:-}"                      # e.g. smtp-relay.brevo.com
+SMTP_PORT="${SMTP_PORT:-587}"                   # 587 (STARTTLS) or 465 (SSL)
+SMTP_USER="${SMTP_USER:-}"
+MAIL_FROM="${MAIL_FROM:-}"                      # e.g. "Magic Pro <no-reply@nacgenai.in>"
+# Magic Pro Desktop: the release public key from desktop/desktop.json (tools/desktop_keys.py), so the
+# admin page refuses manifests that aren't signed with your release key
+DESKTOP_RELEASE_PUBKEY="${DESKTOP_RELEASE_PUBKEY:-$(sed -n 's/.*"release_pubkey": *"\([^"]*\)".*/\1/p' "$(dirname "$0")/../../desktop/desktop.json" 2>/dev/null)}"
 
 g() { gcloud --project "$PROJECT" "$@"; }
 
@@ -64,8 +73,8 @@ deploy)
   case "$RAZORPAY_KEY_ID" in rzp_test_*|"") ;; *) echo "Only a rzp_test_ key: payments stay in test mode."; exit 1;; esac
   g run deploy "$SERVICE" --source deploy/launcher --region "$REGION" --service-account "$SA" \
     --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 512Mi --cpu 1 \
-    --set-env-vars "^|^SITE_URL=https://$DOMAIN|STORE=firestore|FIRESTORE_PROJECT=$PROJECT|GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID|RAZORPAY_KEY_ID=$RAZORPAY_KEY_ID|RAZORPAY_MODE=test|ADMIN_EMAILS=$ADMIN_EMAILS|SUPPORT_EMAIL=$SUPPORT_EMAIL|POOL_MIN_WARM=0" \
-    --set-secrets "MAGIC_SESSION_SECRET=magicpro-session-secret:latest,GOOGLE_CLIENT_SECRET=google-client-secret:latest,RAZORPAY_KEY_SECRET=razorpay-key-secret:latest,RAZORPAY_WEBHOOK_SECRET=razorpay-webhook-secret:latest,VAST_API_KEY=vast-api-key:latest,POOL_SECRET=pool-secret:latest"
+    --set-env-vars "^|^SITE_URL=https://$DOMAIN|STORE=firestore|FIRESTORE_PROJECT=$PROJECT|GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID|RAZORPAY_KEY_ID=$RAZORPAY_KEY_ID|RAZORPAY_MODE=test|ADMIN_EMAILS=$ADMIN_EMAILS|SUPPORT_EMAIL=$SUPPORT_EMAIL|POOL_MIN_WARM=0|DESKTOP_RELEASE_PUBKEY=$DESKTOP_RELEASE_PUBKEY|SMTP_HOST=$SMTP_HOST|SMTP_PORT=$SMTP_PORT|SMTP_USER=$SMTP_USER|MAIL_FROM=$MAIL_FROM" \
+    --set-secrets "MAGIC_SESSION_SECRET=magicpro-session-secret:latest,GOOGLE_CLIENT_SECRET=google-client-secret:latest,RAZORPAY_KEY_SECRET=razorpay-key-secret:latest,RAZORPAY_WEBHOOK_SECRET=razorpay-webhook-secret:latest,VAST_API_KEY=vast-api-key:latest,POOL_SECRET=pool-secret:latest,DESKTOP_LICENSE_KEY=desktop-license-key:latest,SMTP_PASSWORD=smtp-password:latest"
   g run services describe "$SERVICE" --region "$REGION" --format='value(status.url)'
   ;;
 domain)

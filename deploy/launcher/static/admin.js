@@ -230,12 +230,59 @@
       msg(on ? "Service paused." : "Service open again."); loadPool(); loadAudit();
     } catch (err) { msg(err.message, "bad"); e.target.checked = !on; }
   });
+  // ---- desktop keys ----
+  async function loadDesktop() {
+    const { keys, ready, mail_ready, offline_hours } = await call(`/api/admin/desktop/keys?search=${encodeURIComponent($("#dk-q").value)}`);
+    if (!ready) $("#dk-note").textContent = "Desktop licences are not set up: add the DESKTOP_LICENSE_KEY secret (tools/desktop_keys.py) and redeploy.";
+    else if (!mail_ready) $("#dk-note").textContent = "Sign-in e-mails are not set up, so customers can't activate: set SMTP_HOST, MAIL_FROM (and SMTP_USER, the smtp-password secret) and redeploy.";
+    const act = (k, action, label, ask, cls = "ghost") => btn(label, cls, async () => {
+      let days = 0;
+      if (action === "extend") { days = Number(prompt("Add how many days? (minus takes days away)", "30")); if (!days) return; }
+      else if (ask && !confirm(ask)) return;
+      await call("/api/admin/desktop/key", { key: k.key, action, days });
+      msg(`${k.key}: done.`); loadDesktop();
+    });
+    $("#dk-rows").replaceChildren(...keys.map((k) => el("tr", {},
+      td(el("code", { textContent: k.key }), k.note ? el("div", { className: "muted small", textContent: k.note }) : null),
+      td(k.plan), td(k.email || (k.email_lock ? `for ${k.email_lock}` : "–")),
+      td(k.pc ? `${k.pc}${k.pc_gpu ? " · " + k.pc_gpu : ""}${k.app_version ? " · v" + k.app_version : ""}` : "–"),
+      td(k.state + (k.moves ? ` · moved ${k.moves}×` : "")), td(k.expires ? `${when(k.expires)} (${k.days_left} d)` : `${k.days} d from activation`),
+      td(when(k.last_seen)),
+      td(el("div", { className: "form-row" },
+        act(k, "extend", "Add days"),
+        k.pc ? act(k, "move", "Move to new PC", `Free ${k.key} from ${k.pc}? The same e-mail address can then activate it on another PC.`) : null,
+        k.state === "revoked" ? act(k, "unrevoke", "Restore") : act(k, "revoke", "Cancel key", `Cancel ${k.key}? The PC using it locks within 30 minutes (at most ${offline_hours} h offline).`, "danger"),
+        k.email ? act(k, "release", "Free from account", `Free ${k.key} from ${k.email} and its PC, so it can be given to someone else?`) : null)))));
+    if (!keys.length) $("#dk-rows").replaceChildren(el("tr", {}, el("td", { colSpan: 8, className: "muted", textContent: "No keys yet." })));
+    const rel = await call("/api/admin/desktop/release");
+    $("#dk-release").textContent = ["stable", "beta"].map((c) => `${c}: ${rel[c] ? "v" + rel[c].version : "none"}`).join(" · ")
+      + (rel.pubkey_set ? "" : " · DESKTOP_RELEASE_PUBKEY isn't set, so signatures aren't checked here (the app always checks them).");
+  }
+  $("#dk-search").addEventListener("submit", (e) => { e.preventDefault(); loadDesktop().catch((err) => msg(err.message, "bad")); });
+  $("#dk-make").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    try {
+      const { keys } = await call("/api/admin/desktop/keys", { ...f, count: Number(f.count), days: Number(f.days) });
+      $("#dk-new").hidden = false;
+      $("#dk-new").textContent = keys.join("\n");
+      msg(`${keys.length} key(s) created. Copy them from the box under the form.`); loadDesktop();
+    } catch (err) { msg(err.message, "bad"); }
+  });
+  $("#dk-rel").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const r = await call("/api/admin/desktop/release", { manifest: JSON.parse(e.target.manifest.value) });
+      msg(`Version ${r.version} is now the latest on ${r.channel}. Apps offer it within 6 hours or at their next start.`); loadDesktop();
+    } catch (err) { msg(err.message, "bad"); }
+  });
+
   async function loadAudit() {
     const { audit } = await call("/api/admin/audit");
     $("#audit-rows").replaceChildren(...audit.map((a) => el("tr", {}, td(when(a.t)), td(a.admin), td(a.action), td(a.target), td(a.detail))));
   }
 
-  const all = [loadOverview, loadUsers, loadPackages, loadLimits, loadInvites, loadPool, loadAudit];
+  const all = [loadOverview, loadUsers, loadPackages, loadLimits, loadInvites, loadPool, loadDesktop, loadAudit];
   Promise.all(all.map((f) => f().catch((e) => msg(e.message, "bad"))));
   setInterval(() => { loadOverview().catch(() => {}); loadPool(); }, 15000);
   document.addEventListener("click", (e) => { if (e.target.closest("button")) setTimeout(loadAudit, 400); });

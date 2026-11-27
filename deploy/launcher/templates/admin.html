@@ -7,7 +7,7 @@
     <div class="page-head"><h1>Admin</h1><p class="notice test" id="mode" hidden></p></div>
     <nav class="admin-nav" aria-label="Admin sections">
       <a href="#overview">Overview</a><a href="#users">Users</a><a href="#packages">Packages</a><a href="#limits">Limits</a>
-      <a href="#invites">Invite codes</a><a href="#payments">Payments</a><a href="#gpus">GPUs</a><a href="#audit">Audit log</a>
+      <a href="#invites">Invite codes</a><a href="#payments">Payments</a><a href="#gpus">GPUs</a><a href="#desktop">Desktop keys</a><a href="#audit">Audit log</a>
     </nav>
     <p class="notice" id="msg" role="status" hidden></p>
 
@@ -75,6 +75,31 @@
         <button class="btn danger" id="off-all" type="button">Turn all GPUs off</button>
         <label class="check" for="maint"><input id="maint" type="checkbox"> Keep GPUs off until I untick this (customers see "Service is paused")</label>
       </div>
+    </div>
+
+    <div class="box" id="desktop">
+      <h2>Desktop keys</h2>
+      <p class="small muted" id="dk-note">One key works on one PC and one e-mail address. The subscription starts on first activation and lasts the key's days. <b>Move to new PC</b> frees the PC so the same account can activate another one.</p>
+      <form class="form-row" id="dk-make">
+        <label>How many<input name="count" type="number" min="1" max="200" value="1" required></label>
+        <label>Days<input name="days" type="number" min="1" max="3660" value="30" required></label>
+        <label>Plan name<input name="plan" maxlength="40" placeholder="Monthly"></label>
+        <label>Only for e-mail (optional)<input name="email" type="email" maxlength="120"></label>
+        <label>Note<input name="note" maxlength="200" placeholder="Order, customer…"></label>
+        <button class="btn primary" type="submit">Create keys</button>
+      </form>
+      <pre class="small" id="dk-new" hidden style="user-select:all;white-space:pre-wrap"></pre>
+      <form class="form-row" id="dk-search" role="search">
+        <label>Search key, e-mail, PC or note<input id="dk-q" type="search" autocomplete="off"></label>
+        <button class="btn" type="submit">Find keys</button>
+      </form>
+      <div class="table-scroll"><table><thead><tr><th>Key</th><th>Plan</th><th>Account</th><th>PC</th><th>Status</th><th>Expires</th><th>Last seen</th><th></th></tr></thead><tbody id="dk-rows"></tbody></table></div>
+      <h3>Latest release</h3>
+      <p class="small muted" id="dk-release"></p>
+      <form class="stack" id="dk-rel">
+        <label>Signed manifest (from tools/desktop_release.py)<textarea name="manifest" rows="4" spellcheck="false" style="font-family:monospace"></textarea></label>
+        <div><button class="btn" type="submit">Publish this release</button></div>
+      </form>
     </div>
 
     <div class="box" id="audit">

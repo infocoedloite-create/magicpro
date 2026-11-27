@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Magic Pro Desktop · {{ S.brand }}{% endblock %}
+{% block navlinks %}<a href="/download">Desktop app</a>{% if user %}<a href="/app">Account</a>{% endif %}{% endblock %}
+{% block main %}
+<section class="page">
+  <div class="wrap stack" style="max-width:760px">
+    <div class="page-head"><h1>Magic Pro Desktop</h1></div>
+    <div class="box stack">
+      <p>The studio on your own PC: it runs on your own NVIDIA RTX graphics card (built for the RTX 5070), with no usage hours to buy. You need Windows 10 or 11, an up-to-date NVIDIA driver and a subscription key.</p>
+      {% if release %}
+        <div class="form-row">
+          <a class="btn primary big" href="{{ release.full.url }}" rel="noopener">Download version {{ release.version }}</a>
+          <span class="small muted">{{ (release.full.size / 1048576)|round(0)|int }} MB · Windows 64-bit</span>
+        </div>
+        {% if release.notes %}<p class="small muted">What's new: {{ release.notes }}</p>{% endif %}
+        <p class="small muted">The installer sets up everything Magic Pro needs, including its GPU runtime and face models (about 4 GB, downloaded once while installing), and can install OBS Studio for the virtual camera. Everything then runs on your own PC. On first start Magic Pro asks for your key and your e-mail address, and e-mails you a 6-digit code to confirm it. Later updates install from inside the app.</p>
+      {% else %}
+        <p class="notice">The desktop app isn't available for download yet.</p>
+      {% endif %}
+    </div>
+    {% if user %}
+    <div class="box stack">
+      <h2>Your subscription keys</h2>
+      {% if mine %}
+      <div class="table-scroll"><table><thead><tr><th>Key</th><th>Plan</th><th>Status</th><th>PC</th><th>Days left</th></tr></thead><tbody>
+        {% for k in mine %}<tr><td>{{ k.key }}</td><td>{{ k.plan }}</td><td>{{ k.state }}</td><td>{{ k.pc or "–" }}</td><td>{{ k.days_left if k.days_left is not none else "starts on activation" }}</td></tr>{% endfor %}
+      </tbody></table></div>
+      {% else %}<p class="muted">No keys on {{ user.email }} yet. A key is linked to your e-mail address when you activate it.</p>{% endif %}
+      <p class="small muted">Moving to a new PC? {% if S.support_email %}Write to <a href="mailto:{{ S.support_email }}">{{ S.support_email }}</a>{% else %}Contact support{% endif %} and we'll move your key.</p>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

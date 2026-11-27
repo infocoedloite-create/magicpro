@@ -1,0 +1,5 @@
+# Everything Magic Pro Desktop runs with. The build resolves this into runtime.lock (exact
+# versions, Windows x64, Python 3.12 wheels only); users' PCs install exactly that lock.
+-r ../requirements.txt
+cryptography>=42
+pip>=24

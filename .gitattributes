@@ -2,3 +2,4 @@
 *.py text eol=lf
 # Dockerfiles run on Linux (Cloud Build), also when checked out on Windows
 Dockerfile text eol=lf
+*.lock text eol=lf

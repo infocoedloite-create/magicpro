@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Magic Pro</title>
+  <meta name="theme-color" content="#0e0f11">
+  <link rel="icon" href="/desktop/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/desktop/static/desktop.css">
+</head>
+<body class="dk-page">
+  <main class="dk-card" aria-live="polite">
+    <div class="dk-brand"><img src="/desktop/static/icon.svg" alt="" width="36" height="36"><span>Magic Pro</span><small id="ver"></small></div>
+
+    <!-- not activated / pending -->
+    <section id="v-activate" hidden>
+      <h1>Activate Magic Pro on this PC</h1>
+      <p class="dk-muted">Enter your subscription key and your e-mail address. We e-mail you a 6-digit code to confirm it's you. One key works on one PC.</p>
+      <form id="f-activate" class="dk-stack">
+        <label>Subscription key
+          <input id="key" class="dk-mono" autocomplete="off" spellcheck="false" placeholder="MPRO-XXXXX-XXXXX-XXXXX-XXXXX" maxlength="40" autofocus>
+        </label>
+        <label>E-mail address
+          <input id="email" type="email" autocomplete="email" spellcheck="false" placeholder="you@example.com" maxlength="120" required>
+        </label>
+        <button class="dk-btn primary" type="submit" id="b-activate">E-mail me a code</button>
+        <p class="dk-small dk-muted">Activated this PC before? Leave the key empty and use the same e-mail address.</p>
+      </form>
+    </section>
+
+    <section id="v-pending" hidden>
+      <h1>Check your e-mail</h1>
+      <p class="dk-muted" id="code-sent"></p>
+      <form id="f-code" class="dk-stack">
+        <label>6-digit code
+          <input id="code" class="dk-mono dk-otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" placeholder="123456" required>
+        </label>
+        <button class="dk-btn primary" type="submit" id="b-verify">Activate</button>
+      </form>
+      <p class="dk-small dk-muted">No e-mail after a minute? Check spam or promotions, or send a new code.</p>
+      <div class="dk-row">
+        <button class="dk-btn" type="button" id="b-resend">Send a new code</button>
+        <button class="dk-btn ghost" type="button" id="b-cancel">Use a different e-mail</button>
+      </div>
+    </section>
+
+    <section id="v-checking" hidden>
+      <h1>Checking your licence</h1>
+      <p class="dk-small dk-muted"><span class="dk-spin" aria-hidden="true"></span> Reading this PC and contacting the licence server…</p>
+    </section>
+
+    <!-- licence ended / refused -->
+    <section id="v-locked" hidden>
+      <h1 id="locked-title">Your subscription has ended</h1>
+      <p class="dk-muted" id="locked-msg"></p>
+      <div class="dk-row">
+        <button class="dk-btn primary" type="button" id="b-renew">Renew on the website</button>
+        <button class="dk-btn" type="button" id="b-recheck">I renewed: check again</button>
+        <button class="dk-btn ghost" type="button" id="b-other">Use a different key</button>
+      </div>
+    </section>
+
+    <!-- first-run setup -->
+    <section id="v-setup" hidden>
+      <h1 id="setup-title">Setting up Magic Pro</h1>
+      <p class="dk-muted" id="setup-intro">Magic Pro is getting ready on this PC. This takes a few minutes the first time. You can leave this window open.</p>
+      <p class="dk-step" id="setup-step"></p>
+      <div class="dk-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="setup-bar"><span></span></div>
+      <p class="dk-small dk-muted" id="setup-detail"></p>
+      <div class="dk-row"><button class="dk-btn primary" type="button" id="b-setup" hidden>Start setup</button></div>
+    </section>
+
+    <!-- update needed -->
+    <section id="v-update" hidden>
+      <h1>Update required</h1>
+      <p class="dk-muted" id="update-msg"></p>
+      <div class="dk-row"><button class="dk-btn primary" type="button" id="b-update-now">Update now</button></div>
+    </section>
+
+    <section id="v-error" hidden>
+      <h1>Something went wrong</h1>
+      <p class="dk-muted" id="error-msg"></p>
+      <div class="dk-row"><button class="dk-btn" type="button" onclick="location.reload()">Try again</button></div>
+    </section>
+
+    <p class="dk-note" id="msg" role="status" hidden></p>
+
+    <!-- always: this PC, GPU, licence, update -->
+    <dl class="dk-facts" id="facts"></dl>
+    <div class="dk-row dk-foot">
+      <a class="dk-btn primary" href="/" id="b-studio" hidden>Open the studio</a>
+      <button class="dk-btn" type="button" id="b-update" hidden></button>
+      <button class="dk-btn ghost" type="button" id="b-signout" hidden>Sign out on this PC</button>
+    </div>
+  </main>
+  <script src="/desktop/static/desktop.js" defer></script>
+</body>
+</html>

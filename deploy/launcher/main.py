@@ -25,6 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+import licensing
 import payments as paymod
 import pool as poolmod
 import store as storemod
@@ -69,7 +70,7 @@ def pack_view(p):
             "popular": bool(p.get("popular")), "validity_days": p.get("validity_days")}
 
 
-def create_app(settings=None, store=None, pool=None, google=None, razorpay=None) -> FastAPI:
+def create_app(settings=None, store=None, pool=None, google=None, razorpay=None, desktop=None) -> FastAPI:
     S = settings or Settings()
     db = store or make_store()
     if pool is None:
@@ -706,6 +707,10 @@ def create_app(settings=None, store=None, pool=None, google=None, razorpay=None)
         if not want or not secrets.compare_digest(want, request.headers.get("x-tick-token", "")):
             raise HTTPException(403, "bad tick token")
         return {"actions": [list(a) for a in await pool.tick()]}
+
+    # ---------------- Magic Pro Desktop: subscription keys, one PC per key, updates (licensing.py) ----------------
+    licensing.attach(app, db=db, settings=S, current=current, need_user=need_user, need_admin=need_admin, page=page,
+                      **(desktop or {}))
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):

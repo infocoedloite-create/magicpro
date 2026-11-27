@@ -1,0 +1,57 @@
+/* Magic Pro Desktop: the activation/setup page and the licence chip inside the studio.
+   Same palette as static/style.css. */
+.dk-page {
+  --bg: #0e0f11; --surface: #16181b; --surface-2: #1d2024; --line: #2a2e33; --ink: #ecedee; --muted: #9aa0a6;
+  --accent: #f2a93b; --accent-ink: #1a1203; --ok: #34d399; --bad: #f87171; --r: 4px; --r-lg: 8px;
+  --font: "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 var(--font); color-scheme: dark; padding: 24px; box-sizing: border-box;
+}
+.dk-page *, .dk-page *::before, .dk-page *::after { box-sizing: border-box; }
+.dk-card { width: 100%; max-width: 560px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 32px; display: grid; gap: 18px; }
+.dk-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; }
+.dk-brand small { margin-left: auto; color: var(--muted); font-weight: 400; font-size: 13px; font-variant-numeric: tabular-nums; }
+.dk-card h1 { font-size: 24px; line-height: 1.25; margin: 0 0 6px; }
+.dk-card section { display: grid; gap: 12px; }
+.dk-page [hidden] { display: none !important; }
+.dk-card p { margin: 0; }
+.dk-muted { color: var(--muted); }
+.dk-small { font-size: 13px; }
+.dk-stack { display: grid; gap: 12px; }
+.dk-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.dk-card label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+.dk-card input { min-height: 46px; padding: 0 14px; border-radius: var(--r); border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: 500 16px/1 var(--font); }
+.dk-card input.dk-mono { font: 600 17px/1 "Cascadia Mono", Consolas, ui-monospace, monospace; letter-spacing: .04em; text-transform: uppercase; }
+.dk-card input.dk-otp { font-size: 24px; letter-spacing: .3em; max-width: 220px; }
+.dk-card input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+.dk-btn { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; padding: 0 16px; border-radius: var(--r);
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--ink); font: 600 14px var(--font); cursor: pointer; text-decoration: none; }
+.dk-btn:hover { border-color: #3a3f45; }
+.dk-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.dk-btn.ghost { background: transparent; }
+.dk-btn:disabled { opacity: .55; cursor: default; }
+.dk-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dk-code { font: 800 34px/1.1 "Cascadia Mono", Consolas, monospace; letter-spacing: .14em; color: var(--accent); }
+.dk-note { padding: 10px 14px; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface-2); font-size: 14px; }
+.dk-note.bad { border-color: #5a2a2c; color: var(--bad); }
+.dk-note.good { border-color: #24502e; color: #8fe0a0; }
+.dk-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; }
+.dk-facts dt { color: var(--muted); }
+.dk-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.dk-facts .warn { color: var(--accent); }
+.dk-foot:empty { display: none; }
+.dk-step { font-weight: 600; }
+.dk-bar { height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+.dk-bar span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+.dk-card pre { max-height: 180px; overflow: auto; white-space: pre-wrap; background: var(--bg); padding: 10px; border-radius: var(--r); color: var(--muted); }
+.dk-spin { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--muted); border-top-color: transparent; animation: dk-spin 1s linear infinite; vertical-align: -1px; margin-right: 4px; }
+@keyframes dk-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .dk-spin { animation: none; } .dk-bar span { transition: none; } }
+
+/* the chip in the studio's top bar */
+.dk-chip { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px; border-radius: 4px; border: 1px solid #2a2e33;
+  color: #9aa0a6; font: 500 13px "Segoe UI", system-ui, sans-serif; text-decoration: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dk-chip:hover { border-color: #3a3f45; color: #ecedee; }
+.dk-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: #34d399; }
+.dk-chip.warn .dot { background: #f2a93b; }
+.dk-chip.update { border-color: #f2a93b; color: #f2a93b; }

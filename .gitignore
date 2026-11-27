@@ -10,3 +10,9 @@ settings.json
 .agents/
 .claude/
 skills-lock.json
+# desktop builds and signing keys (keys/ holds private keys: never commit)
+dist/
+keys/
+desktop/_build.json
+pyarmor.bug.log
+.pyarmor/
